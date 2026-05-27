@@ -176,7 +176,9 @@ def run_python_file(path: str, timeout: int = 15) -> str:
     try:
         result = subprocess.run(
             [python_exe, str(target)],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,   # evita herencia de pipes MCP
             text=True,
             timeout=timeout,
             cwd=str(BASE_PATH)

@@ -4,16 +4,23 @@ mcps/git_server.py
 Servidor MCP con herramientas Git para el proyecto ai-lab.
 
 Tools expuestas:
-  - git_status          → estado del working tree
-  - git_log             → historial de commits
-  - git_diff            → diferencias entre commits, ramas o archivos
-  - git_show            → contenido de un commit concreto
-  - git_branches        → lista de ramas locales y remota activa
-  - git_blame           → autoría línea a línea de un archivo
-  - git_search_commits  → busca texto en mensajes de commit
-  - git_file_history    → historial de commits que tocaron un archivo
+  - git_status          -> estado del working tree
+  - git_log             -> historial de commits
+  - git_diff            -> diferencias entre commits, ramas o archivos
+  - git_show            -> contenido de un commit concreto
+  - git_branches        -> lista de ramas locales y remota activa
+  - git_blame           -> autoria linea a linea de un archivo
+  - git_search_commits  -> busca texto en mensajes de commit
+  - git_file_history    -> historial de commits que tocaron un archivo
+
+NOTA TECNICA:
+  FastMCP corre en un event loop asyncio con anyio (Windows ProactorEventLoop).
+  asyncio.create_subprocess_exec falla en subprocesos anidados en Windows.
+  La solucion es ejecutar subprocess.run en un thread pool via asyncio.to_thread,
+  que no bloquea el event loop y funciona correctamente en Windows.
 """
 
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
@@ -28,28 +35,30 @@ BASE_PATH = Path(r"C:\Users\chuwi\ai-lab")
 mcp = FastMCP("git-server")
 
 # =====================================
-# HELPER
+# HELPER — subprocess en thread pool
 # =====================================
 
-def _git(args: list[str], cwd: Path = BASE_PATH) -> str:
-    """
-    Ejecuta un comando git y devuelve stdout como string.
-    En caso de error devuelve el mensaje de stderr.
+def _git_sync(args: list[str]) -> str:
+    """Ejecuta git de forma sincrona (se llama desde un thread).
+    
+    IMPORTANTE: stdin=DEVNULL es obligatorio cuando el proceso padre
+    es un servidor MCP stdio. Sin esto, git hereda los pipes MCP y
+    se bloquea esperando input del protocolo.
     """
     try:
         result = subprocess.run(
             ["git"] + args,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,   # <- evita herencia de pipes MCP
+            cwd=str(BASE_PATH),
             timeout=15
         )
+        out = result.stdout.decode("utf-8", errors="replace").strip()
+        err = result.stderr.decode("utf-8", errors="replace").strip()
         if result.returncode != 0:
-            err = result.stderr.strip()
-            return f"ERROR git: {err}" if err else f"git salió con código {result.returncode}"
-        return result.stdout.strip() or "(sin salida)"
+            return f"ERROR git: {err}" if err else f"git salio con codigo {result.returncode}"
+        return out if out else "(sin salida)"
     except subprocess.TimeoutExpired:
         return "ERROR: timeout ejecutando git"
     except FileNotFoundError:
@@ -58,24 +67,39 @@ def _git(args: list[str], cwd: Path = BASE_PATH) -> str:
         return f"ERROR inesperado: {e}"
 
 
+async def _git(args: list[str]) -> str:
+    """Ejecuta git en un thread pool de anyio para no bloquear el event loop."""
+    import anyio
+    return await anyio.to_thread.run_sync(lambda: _git_sync(args))
+
+
+def _truncate(text: str, max_lines: int = 150) -> str:
+    """Trunca la salida para no saturar el contexto del LLM."""
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        return "\n".join(lines[:max_lines]) + f"\n\n... (truncado, {len(lines)} lineas totales)"
+    return text
+
+
 # =====================================
 # TOOLS
 # =====================================
 
 @mcp.tool()
-def git_status() -> str:
+async def git_status() -> str:
     """
     Muestra el estado actual del repositorio: archivos modificados,
     staged, sin seguimiento y rama activa.
-    Sin parámetros.
+    Sin parametros.
     """
-    branch = _git(["branch", "--show-current"])
-    status = _git(["status", "--short"])
-    ahead_behind = _git(["status", "--branch", "--short"]).splitlines()[0]
+    branch = await _git(["branch", "--show-current"])
+    status = await _git(["status", "--short"])
+    tracking = await _git(["status", "--branch", "--short"])
+    tracking_line = tracking.splitlines()[0] if tracking else ""
 
     lines = [
         f"Rama activa : {branch}",
-        f"Estado      : {ahead_behind}",
+        f"Estado      : {tracking_line}",
         "",
         "Cambios:",
         status if status != "(sin salida)" else "  (working tree limpio)"
@@ -84,11 +108,11 @@ def git_status() -> str:
 
 
 @mcp.tool()
-def git_log(max_commits: int = 10, branch: str = "") -> str:
+async def git_log(max_commits: int = 10, branch: str = "") -> str:
     """
     Muestra el historial de commits.
-    Parámetros:
-      max_commits: número máximo de commits a mostrar (por defecto 10)
+    Parametros:
+      max_commits: numero maximo de commits a mostrar (por defecto 10)
       branch: rama o referencia (por defecto la rama activa)
     """
     args = [
@@ -99,54 +123,45 @@ def git_log(max_commits: int = 10, branch: str = "") -> str:
     ]
     if branch:
         args.append(branch)
-    return _git(args)
+    return await _git(args)
 
 
 @mcp.tool()
-def git_diff(target: str = "", staged: bool = False) -> str:
+async def git_diff(target: str = "", staged: bool = False) -> str:
     """
-    Muestra diferencias en el código.
-    Parámetros:
+    Muestra diferencias en el codigo.
+    Parametros:
       target: archivo, commit o rango (ej: 'HEAD~1', 'main..feature', 'archivo.py').
-              Si está vacío muestra todos los cambios no staged.
-      staged: si True muestra los cambios en el área de staging (--cached)
+              Si esta vacio muestra todos los cambios no staged.
+      staged: si True muestra los cambios en el area de staging (--cached)
     """
     args = ["diff"]
     if staged:
         args.append("--cached")
     if target:
         args.append(target)
-    # Limitar salida para no saturar el contexto del LLM
-    output = _git(args)
-    lines = output.splitlines()
-    if len(lines) > 200:
-        return "\n".join(lines[:200]) + f"\n\n... (truncado, {len(lines)} líneas totales)"
-    return output
+    return _truncate(await _git(args), max_lines=200)
 
 
 @mcp.tool()
-def git_show(ref: str = "HEAD") -> str:
+async def git_show(ref: str = "HEAD") -> str:
     """
     Muestra el contenido completo de un commit: metadatos y diff.
-    Parámetros:
+    Parametros:
       ref: referencia del commit (hash, HEAD, HEAD~1, tag...). Por defecto HEAD.
     """
-    output = _git(["show", "--stat", ref])
-    lines = output.splitlines()
-    if len(lines) > 150:
-        return "\n".join(lines[:150]) + f"\n\n... (truncado, {len(lines)} líneas totales)"
-    return output
+    return _truncate(await _git(["show", "--stat", ref]))
 
 
 @mcp.tool()
-def git_branches() -> str:
+async def git_branches() -> str:
     """
     Lista todas las ramas locales y marca la activa.
-    También muestra el remote tracking si existe.
-    Sin parámetros.
+    Tambien muestra el remote tracking si existe.
+    Sin parametros.
     """
-    local  = _git(["branch", "-vv"])
-    remote = _git(["remote", "-v"])
+    local  = await _git(["branch", "-vv"])
+    remote = await _git(["remote", "-v"])
     parts = ["=== Ramas locales ===", local]
     if remote != "(sin salida)":
         parts += ["", "=== Remotos ===", remote]
@@ -154,15 +169,14 @@ def git_branches() -> str:
 
 
 @mcp.tool()
-def git_blame(path: str, start_line: int = 1, end_line: int = 0) -> str:
+async def git_blame(path: str, start_line: int = 1, end_line: int = 0) -> str:
     """
-    Muestra la autoría línea a línea de un archivo.
-    Parámetros:
+    Muestra la autoria linea a linea de un archivo.
+    Parametros:
       path: ruta relativa al archivo dentro del proyecto
-      start_line: primera línea a mostrar (por defecto 1)
-      end_line: última línea a mostrar (0 = hasta el final, máx 100 líneas)
+      start_line: primera linea a mostrar (por defecto 1)
+      end_line: ultima linea a mostrar (0 = hasta el final, max 100 lineas)
     """
-    # Validar que el archivo está dentro del proyecto
     target = (BASE_PATH / path).resolve()
     if not str(target).startswith(str(BASE_PATH.resolve())):
         return f"ERROR: ruta fuera del proyecto: {path}"
@@ -170,30 +184,24 @@ def git_blame(path: str, start_line: int = 1, end_line: int = 0) -> str:
         return f"ERROR: archivo no encontrado: {path}"
 
     args = ["blame", "--date=short", "-w"]
-
-    # Rango de líneas
     if end_line > 0:
         args += [f"-L{start_line},{end_line}"]
     elif start_line > 1:
         args += [f"-L{start_line},+100"]
-
     args.append(path)
-    output = _git(args)
-    lines = output.splitlines()
-    if len(lines) > 100:
-        return "\n".join(lines[:100]) + f"\n\n... (truncado, {len(lines)} líneas totales)"
-    return output
+
+    return _truncate(await _git(args), max_lines=100)
 
 
 @mcp.tool()
-def git_search_commits(query: str, max_results: int = 20) -> str:
+async def git_search_commits(query: str, max_results: int = 20) -> str:
     """
     Busca texto en los mensajes de commit del historial.
-    Parámetros:
+    Parametros:
       query: texto a buscar (case-insensitive)
-      max_results: número máximo de resultados (por defecto 20)
+      max_results: numero maximo de resultados (por defecto 20)
     """
-    output = _git([
+    output = await _git([
         "log",
         f"-{max_results}",
         f"--grep={query}",
@@ -207,14 +215,14 @@ def git_search_commits(query: str, max_results: int = 20) -> str:
 
 
 @mcp.tool()
-def git_file_history(path: str, max_commits: int = 10) -> str:
+async def git_file_history(path: str, max_commits: int = 10) -> str:
     """
     Muestra el historial de commits que modificaron un archivo concreto.
-    Parámetros:
+    Parametros:
       path: ruta relativa al archivo
-      max_commits: número máximo de commits (por defecto 10)
+      max_commits: numero maximo de commits (por defecto 10)
     """
-    output = _git([
+    output = await _git([
         "log",
         f"-{max_commits}",
         "--pretty=format:%h  %ad  %an  %s",
@@ -224,7 +232,7 @@ def git_file_history(path: str, max_commits: int = 10) -> str:
         path
     ])
     if output == "(sin salida)":
-        return f"Sin historial para '{path}' (¿está en el repo?)"
+        return f"Sin historial para '{path}' (esta en el repo?)"
     return f"Historial de '{path}':\n{output}"
 
 
@@ -235,10 +243,4 @@ def git_file_history(path: str, max_commits: int = 10) -> str:
 if __name__ == "__main__":
     print("MCP git-server starting...", file=sys.stderr)
     print(f"Repo: {BASE_PATH}", file=sys.stderr)
-    # Verificar que es un repo git válido
-    check = _git(["rev-parse", "--git-dir"])
-    if check.startswith("ERROR"):
-        print(f"ADVERTENCIA: {check}", file=sys.stderr)
-    else:
-        print(f"Git repo OK: {check}", file=sys.stderr)
     mcp.run(transport="stdio")
