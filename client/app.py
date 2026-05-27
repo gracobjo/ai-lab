@@ -2,13 +2,15 @@
 client/app.py
 =============
 API REST con FastAPI que expone el agente MCP como servicio HTTP.
+Incluye interfaz web de chat accesible en http://localhost:8000
 
 Endpoints:
-  POST /chat          → envía un mensaje al agente
-  GET  /memory        → consulta el historial de conversación
-  DELETE /memory      → borra el historial
-  GET  /tools         → lista las tools MCP disponibles
-  GET  /health        → estado del servicio
+  GET  /              -> interfaz web de chat
+  POST /chat          -> envia un mensaje al agente
+  GET  /memory        -> consulta el historial de conversacion
+  DELETE /memory      -> borra el historial
+  GET  /tools         -> lista las tools MCP disponibles
+  GET  /health        -> estado del servicio
 
 Uso:
   uvicorn client.app:app --reload --port 8000
@@ -21,6 +23,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from openai import OpenAI
@@ -51,6 +54,10 @@ SERVERS = {
     "git": StdioServerParameters(
         command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
         args=[str(BASE_PATH / "mcps" / "git_server.py")]
+    ),
+    "fetch": StdioServerParameters(
+        command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
+        args=[str(BASE_PATH / "mcps" / "fetch_server.py")]
     ),
     "thinking": StdioServerParameters(
         command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
@@ -141,7 +148,7 @@ def mcp_tool_to_openai(tool, server_name: str) -> dict:
 
 
 # =====================================
-# AGENTE (reutilizable por endpoint)
+# AGENTE
 # =====================================
 
 async def _open_servers_and_run(
@@ -168,16 +175,16 @@ async def _open_servers_and_run(
                     tool_map[ot["function"]["name"]] = (t.name, session)
                 return await _open_servers_and_run(rest, all_tools, tool_map, callback)
     except Exception as e:
-        print(f"⚠️  Servidor '{server_name}' no disponible: {e}")
+        print(f"Servidor '{server_name}' no disponible: {e}")
         return await _open_servers_and_run(rest, all_tools, tool_map, callback)
 
 
 async def run_agent_once(user_input: str, max_steps: int = 8) -> dict:
     """Ejecuta el agente y devuelve respuesta, pasos y tools usadas."""
 
-    history   = load_memory()
-    all_tools: list[dict] = []
-    tool_map:  dict[str, tuple] = {}
+    history      = load_memory()
+    all_tools:   list[dict] = []
+    tool_map:    dict[str, tuple] = {}
     steps_done   = 0
     tools_used   = []
     final_answer = ""
@@ -268,10 +275,440 @@ No es necesario para preguntas simples.
     await _open_servers_and_run(list(SERVERS.items()), all_tools, tool_map, run_loop)
 
     return {
-        "answer": final_answer or "El agente no generó respuesta final.",
+        "answer": final_answer or "El agente no genero respuesta final.",
         "steps": steps_done,
         "tools_used": list(set(tools_used))
     }
+
+
+# =====================================
+# INTERFAZ WEB
+# =====================================
+
+WEB_UI = """<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ai-lab</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* HEADER */
+    header {
+      padding: 14px 24px;
+      background: #1a1d27;
+      border-bottom: 1px solid #2a2d3a;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 1.1rem; font-weight: 600; color: #fff; }
+    header span { font-size: 0.78rem; color: #666; }
+
+    #status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #444;
+      display: inline-block;
+      margin-right: 6px;
+      transition: background 0.3s;
+    }
+    #status-dot.ok  { background: #4caf50; }
+    #status-dot.err { background: #f44336; }
+
+    /* CHAT */
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .msg {
+      max-width: 78%;
+      padding: 12px 16px;
+      border-radius: 12px;
+      line-height: 1.55;
+      font-size: 0.92rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: #2563eb;
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .msg.agent {
+      align-self: flex-start;
+      background: #1e2130;
+      border: 1px solid #2a2d3a;
+      border-bottom-left-radius: 4px;
+    }
+    .msg.system {
+      align-self: center;
+      background: transparent;
+      color: #555;
+      font-size: 0.78rem;
+      border: none;
+      padding: 4px 0;
+    }
+
+    .meta {
+      font-size: 0.72rem;
+      color: #555;
+      margin-top: 6px;
+    }
+
+    /* TYPING INDICATOR */
+    .typing {
+      align-self: flex-start;
+      background: #1e2130;
+      border: 1px solid #2a2d3a;
+      border-radius: 12px;
+      border-bottom-left-radius: 4px;
+      padding: 14px 18px;
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+    .typing span {
+      width: 7px; height: 7px;
+      background: #555;
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); }
+      40%           { transform: translateY(-6px); background: #2563eb; }
+    }
+
+    /* INPUT */
+    #input-area {
+      padding: 16px 24px;
+      background: #1a1d27;
+      border-top: 1px solid #2a2d3a;
+      display: flex;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    #msg-input {
+      flex: 1;
+      background: #0f1117;
+      border: 1px solid #2a2d3a;
+      border-radius: 8px;
+      color: #e0e0e0;
+      padding: 10px 14px;
+      font-size: 0.92rem;
+      resize: none;
+      outline: none;
+      min-height: 44px;
+      max-height: 140px;
+      line-height: 1.5;
+      transition: border-color 0.2s;
+    }
+    #msg-input:focus { border-color: #2563eb; }
+    #msg-input::placeholder { color: #444; }
+
+    #send-btn {
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0 20px;
+      font-size: 0.92rem;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+      white-space: nowrap;
+      align-self: flex-end;
+      height: 44px;
+    }
+    #send-btn:hover:not(:disabled) { background: #1d4ed8; }
+    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* SIDEBAR TOOLS */
+    #sidebar {
+      position: fixed;
+      right: 0; top: 0; bottom: 0;
+      width: 280px;
+      background: #1a1d27;
+      border-left: 1px solid #2a2d3a;
+      padding: 16px;
+      overflow-y: auto;
+      transform: translateX(100%);
+      transition: transform 0.25s;
+      z-index: 10;
+    }
+    #sidebar.open { transform: translateX(0); }
+    #sidebar h2 { font-size: 0.85rem; color: #888; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .tool-item { padding: 8px 10px; border-radius: 6px; margin-bottom: 4px; font-size: 0.78rem; }
+    .tool-item .tool-name { color: #7dd3fc; font-family: monospace; }
+    .tool-item .tool-desc { color: #666; margin-top: 2px; }
+    .tool-server { font-size: 0.7rem; color: #444; margin-top: 2px; }
+
+    #tools-btn {
+      background: transparent;
+      border: 1px solid #2a2d3a;
+      color: #888;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+    #tools-btn:hover { border-color: #555; color: #ccc; }
+
+    #clear-btn {
+      background: transparent;
+      border: 1px solid #2a2d3a;
+      color: #888;
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      cursor: pointer;
+    }
+    #clear-btn:hover { border-color: #f44336; color: #f44336; }
+
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+
+    /* SCROLLBAR */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #2a2d3a; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1><span id="status-dot"></span>ai-lab</h1>
+  <div class="header-actions">
+    <button id="clear-btn" title="Borrar historial">Limpiar</button>
+    <button id="tools-btn" title="Ver tools disponibles">Tools</button>
+    <span id="status-text">conectando...</span>
+  </div>
+</header>
+
+<div id="chat"></div>
+
+<div id="input-area">
+  <textarea id="msg-input" placeholder="Escribe tu pregunta..." rows="1"></textarea>
+  <button id="send-btn" disabled>Enviar</button>
+</div>
+
+<div id="sidebar">
+  <h2>Tools disponibles</h2>
+  <div id="tools-list">Cargando...</div>
+</div>
+
+<script>
+  const chat     = document.getElementById('chat');
+  const input    = document.getElementById('msg-input');
+  const sendBtn  = document.getElementById('send-btn');
+  const dot      = document.getElementById('status-dot');
+  const statusTx = document.getElementById('status-text');
+  const sidebar  = document.getElementById('sidebar');
+  const toolsList= document.getElementById('tools-list');
+  const toolsBtn = document.getElementById('tools-btn');
+  const clearBtn = document.getElementById('clear-btn');
+
+  // ── Utilidades ──────────────────────────────────────────
+
+  function addMsg(role, text, meta) {
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    div.textContent = text;
+    if (meta) {
+      const m = document.createElement('div');
+      m.className = 'meta';
+      m.textContent = meta;
+      div.appendChild(m);
+    }
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+    return div;
+  }
+
+  function addTyping() {
+    const div = document.createElement('div');
+    div.className = 'typing';
+    div.id = 'typing';
+    div.innerHTML = '<span></span><span></span><span></span>';
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function removeTyping() {
+    const t = document.getElementById('typing');
+    if (t) t.remove();
+  }
+
+  function setStatus(ok) {
+    dot.className = ok ? 'ok' : 'err';
+    statusTx.textContent = ok ? 'conectado' : 'sin conexion';
+    sendBtn.disabled = !ok;
+  }
+
+  // ── Health check ────────────────────────────────────────
+
+  async function checkHealth() {
+    try {
+      const r = await fetch('/health');
+      if (r.ok) {
+        const d = await r.json();
+        setStatus(true);
+        addMsg('system', `Modelo: ${d.model}`);
+      } else {
+        setStatus(false);
+      }
+    } catch {
+      setStatus(false);
+      addMsg('system', 'No se puede conectar con la API. Verifica que el servidor esta activo.');
+    }
+  }
+
+  // ── Cargar historial ────────────────────────────────────
+
+  async function loadHistory() {
+    try {
+      const r = await fetch('/memory');
+      const d = await r.json();
+      if (d.count > 0) {
+        addMsg('system', `Historial cargado: ${d.count} mensajes previos`);
+        d.messages.slice(-6).forEach(m => {
+          addMsg(m.role === 'user' ? 'user' : 'agent', m.content);
+        });
+      }
+    } catch { /* sin historial */ }
+  }
+
+  // ── Enviar mensaje ──────────────────────────────────────
+
+  async function sendMessage() {
+    const text = input.value.trim();
+    if (!text) return;
+
+    input.value = '';
+    input.style.height = 'auto';
+    sendBtn.disabled = true;
+
+    addMsg('user', text);
+    addTyping();
+
+    try {
+      const r = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, max_steps: 8 })
+      });
+
+      removeTyping();
+
+      if (!r.ok) {
+        const err = await r.json();
+        addMsg('system', `Error: ${err.detail || r.statusText}`);
+      } else {
+        const d = await r.json();
+        const meta = `${d.steps} paso${d.steps !== 1 ? 's' : ''} · ${d.tools_used.length} tool${d.tools_used.length !== 1 ? 's' : ''}: ${d.tools_used.join(', ') || 'ninguna'}`;
+        addMsg('agent', d.answer, meta);
+      }
+    } catch (e) {
+      removeTyping();
+      addMsg('system', `Error de red: ${e.message}`);
+    }
+
+    sendBtn.disabled = false;
+    input.focus();
+  }
+
+  // ── Tools sidebar ───────────────────────────────────────
+
+  async function loadTools() {
+    try {
+      const r = await fetch('/tools');
+      const d = await r.json();
+      if (!d.tools || d.tools.length === 0) {
+        toolsList.innerHTML = '<div style="color:#555;font-size:0.8rem">Sin tools disponibles</div>';
+        return;
+      }
+      // Agrupar por servidor
+      const byServer = {};
+      d.tools.forEach(t => {
+        if (!byServer[t.server]) byServer[t.server] = [];
+        byServer[t.server].push(t);
+      });
+      toolsList.innerHTML = '';
+      Object.entries(byServer).forEach(([server, tools]) => {
+        const h = document.createElement('div');
+        h.style.cssText = 'color:#555;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;margin:12px 0 6px';
+        h.textContent = server;
+        toolsList.appendChild(h);
+        tools.forEach(t => {
+          const item = document.createElement('div');
+          item.className = 'tool-item';
+          item.innerHTML = `<div class="tool-name">${t.name}</div><div class="tool-desc">${t.description.slice(0, 80)}${t.description.length > 80 ? '...' : ''}</div>`;
+          toolsList.appendChild(item);
+        });
+      });
+    } catch {
+      toolsList.innerHTML = '<div style="color:#555;font-size:0.8rem">Error cargando tools</div>';
+    }
+  }
+
+  toolsBtn.addEventListener('click', () => {
+    sidebar.classList.toggle('open');
+    if (sidebar.classList.contains('open')) loadTools();
+  });
+
+  // ── Limpiar historial ───────────────────────────────────
+
+  clearBtn.addEventListener('click', async () => {
+    if (!confirm('Borrar el historial de conversacion?')) return;
+    await fetch('/memory', { method: 'DELETE' });
+    chat.innerHTML = '';
+    addMsg('system', 'Historial borrado.');
+  });
+
+  // ── Input: auto-resize + Enter para enviar ──────────────
+
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!sendBtn.disabled) sendMessage();
+    }
+  });
+
+  sendBtn.addEventListener('click', sendMessage);
+
+  // ── Init ────────────────────────────────────────────────
+
+  (async () => {
+    await checkHealth();
+    await loadHistory();
+    input.focus();
+  })();
+</script>
+</body>
+</html>"""
 
 
 # =====================================
@@ -280,9 +717,9 @@ No es necesario para preguntas simples.
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 ai-lab API iniciada")
+    print("ai-lab API iniciada — http://localhost:8000")
     yield
-    print("🛑 ai-lab API detenida")
+    print("ai-lab API detenida")
 
 
 app = FastAPI(
@@ -304,6 +741,12 @@ app.add_middleware(
 # ENDPOINTS
 # =====================================
 
+@app.get("/", response_class=HTMLResponse)
+async def web_ui():
+    """Interfaz web de chat."""
+    return WEB_UI
+
+
 @app.get("/health")
 async def health():
     """Estado del servicio."""
@@ -312,23 +755,23 @@ async def health():
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    """Envía un mensaje al agente y obtiene respuesta."""
+    """Envia un mensaje al agente y obtiene respuesta."""
     if not req.message.strip():
-        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
+        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacio.")
     result = await run_agent_once(req.message, max_steps=req.max_steps)
     return ChatResponse(**result)
 
 
 @app.get("/memory", response_model=MemoryResponse)
 async def get_memory():
-    """Devuelve el historial de conversación."""
+    """Devuelve el historial de conversacion."""
     history = load_memory()
     return MemoryResponse(messages=history, count=len(history))
 
 
 @app.delete("/memory")
 async def clear_memory():
-    """Borra el historial de conversación."""
+    """Borra el historial de conversacion."""
     if MEMORY_FILE.exists():
         MEMORY_FILE.unlink()
     return {"status": "ok", "message": "Historial borrado."}
