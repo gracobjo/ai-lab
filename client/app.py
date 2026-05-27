@@ -52,6 +52,10 @@ SERVERS = {
         command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
         args=[str(BASE_PATH / "mcps" / "git_server.py")]
     ),
+    "fetch": StdioServerParameters(
+        command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
+        args=[str(BASE_PATH / "mcps" / "fetch_server.py")]
+    ),
 }
 
 # =====================================
