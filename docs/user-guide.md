@@ -17,7 +17,7 @@
 
 ## 1. Qué es ai-lab
 
-ai-lab es un agente de inteligencia artificial que corre completamente en tu máquina, sin enviar datos a servicios externos. Puedes hacerle preguntas sobre tu proyecto, pedirle que explore archivos, busque código, ejecute scripts o responda usando el contenido de tus propios documentos.
+ai-lab es un agente de inteligencia artificial que corre completamente en tu máquina, sin enviar datos a servicios externos. Puedes hacerle preguntas sobre tu proyecto, pedirle que explore archivos, busque código, consulte documentación online, analice el historial git o razone paso a paso sobre problemas complejos.
 
 El agente usa:
 - **LM Studio** para ejecutar el modelo de lenguaje localmente
@@ -25,54 +25,40 @@ El agente usa:
 - **ChromaDB** para búsqueda semántica sobre tus archivos
 - **FastAPI** para exponer el agente como servicio HTTP
 
+Cuenta con **31 herramientas** repartidas en 5 servidores MCP.
+
 ---
 
 ## 2. Requisitos previos
 
-Antes de empezar necesitas tener instalado:
-
 - **Python 3.11** o superior
 - **Node.js 18** o superior (para el servidor MCP de filesystem)
-- **LM Studio** con el modelo `qwen2.5-7b-instruct-1m` descargado y el servidor local activo en `http://localhost:1234`
-- **Git** (opcional, para clonar el repositorio)
-
-Para verificar que tienes lo necesario:
+- **Git** instalado y en el PATH
+- **LM Studio** con el modelo `qwen2.5-7b-instruct-1m` y el servidor local activo en `http://localhost:1234`
 
 ```bash
-python --version      # debe mostrar 3.11 o superior
-node --version        # debe mostrar 18 o superior
-npx --version         # incluido con Node.js
+python --version   # 3.11+
+node --version     # 18+
+git --version      # cualquier versión reciente
 ```
 
 ---
 
 ## 3. Instalación
 
-### Clonar el repositorio
-
 ```bash
 git clone https://github.com/gracobjo/ai-lab.git
 cd ai-lab
-```
-
-### Crear el entorno virtual e instalar dependencias
-
-```bash
-python -m venv venv
 
 # Windows
+python -m venv venv
 venv\Scripts\activate
 
 # macOS / Linux
+python -m venv venv
 source venv/bin/activate
 
-pip install mcp openai fastapi uvicorn chromadb sentence-transformers torch pydantic
-```
-
-### Verificar la instalación
-
-```bash
-python -c "import mcp, openai, fastapi, chromadb, sentence_transformers; print('OK')"
+pip install mcp openai fastapi uvicorn chromadb sentence-transformers torch httpx pydantic
 ```
 
 ---
@@ -81,281 +67,298 @@ python -c "import mcp, openai, fastapi, chromadb, sentence_transformers; print('
 
 ### Ajustar la ruta base
 
-Abre cada uno de estos archivos y cambia `BASE_PATH` a la ruta donde tienes el proyecto en tu máquina:
+Cambia `BASE_PATH` en estos archivos a la ruta real del proyecto en tu máquina:
 
 - `mcps/server.py`
+- `mcps/git_server.py`
+- `mcps/thinking_server.py`
 - `rag/indexer.py`
 - `rag/retriever.py`
 - `mcp_agent_loop.py`
 - `client/app.py`
 
-Ejemplo: si tienes el proyecto en `C:\proyectos\ai-lab`, cambia:
-
 ```python
-BASE_PATH = Path(r"C:\proyectos\ai-lab")
+BASE_PATH = Path(r"C:\tu-ruta\ai-lab")   # Windows
+BASE_PATH = Path("/home/usuario/ai-lab")  # Linux/macOS
 ```
 
 ### Iniciar LM Studio
 
-1. Abre LM Studio
-2. Carga el modelo `qwen2.5-7b-instruct-1m`
-3. Ve a la pestaña **Local Server** y pulsa **Start Server**
-4. Verifica que el servidor está activo en `http://localhost:1234`
+1. Abre LM Studio y carga `qwen2.5-7b-instruct-1m`
+2. Ve a **Local Server** → **Start Server**
+3. Verifica que responde en `http://localhost:1234`
 
 ---
 
 ## 5. Uso del agente por línea de comandos
 
-El agente principal es `mcp_agent_loop.py`. Puedes pasarle cualquier pregunta como argumento:
-
 ```bash
-# Con pregunta como argumento
-python mcp_agent_loop.py "¿Qué archivos Python hay en el proyecto?"
-
-# Sin argumento usa la pregunta por defecto
-python mcp_agent_loop.py
+python mcp_agent_loop.py "tu pregunta aquí"
+python mcp_agent_loop.py   # usa pregunta por defecto
 ```
 
-### Ejemplos de preguntas
+### Ejemplos por categoría
 
+**Exploración del proyecto:**
 ```bash
 python mcp_agent_loop.py "Explora el proyecto y describe su estructura"
-
-python mcp_agent_loop.py "Busca todos los archivos que usan function calling"
-
-python mcp_agent_loop.py "Lee el archivo mcp_agent_loop.py y explícame qué hace"
-
 python mcp_agent_loop.py "¿Cuántas líneas de código tiene el proyecto en total?"
+python mcp_agent_loop.py "Lee mcp_agent_loop.py y explícame qué hace"
+```
 
+**Búsqueda en el código:**
+```bash
+python mcp_agent_loop.py "Busca todos los archivos que usan subprocess"
+python mcp_agent_loop.py "¿Dónde se define la función _resolve?"
+python mcp_agent_loop.py "Encuentra todos los usos de asyncio.gather"
+```
+
+**Búsqueda semántica (RAG):**
+```bash
+python mcp_agent_loop.py "¿Cómo gestiona el agente los errores de conexión?"
+python mcp_agent_loop.py "Explícame el sistema de memoria del agente"
+```
+
+**Control de versiones:**
+```bash
+python mcp_agent_loop.py "¿Cuáles son los últimos 5 commits del proyecto?"
+python mcp_agent_loop.py "¿Qué cambios hay pendientes de commit?"
+python mcp_agent_loop.py "¿Quién escribió la función open_servers_and_run?"
+```
+
+**Consultas web:**
+```bash
+python mcp_agent_loop.py "¿Qué versión tiene el paquete mcp en PyPI?"
+python mcp_agent_loop.py "Lee la documentación de FastMCP y resume cómo crear tools"
+```
+
+**Razonamiento complejo:**
+```bash
+python mcp_agent_loop.py "Analiza el código del servidor git y sugiere mejoras"
+python mcp_agent_loop.py "¿Por qué podría fallar semantic_search en la primera llamada?"
+```
+
+**Escritura de archivos:**
+```bash
 python mcp_agent_loop.py "Crea un archivo data/notas.txt con un resumen del proyecto"
 ```
 
 ### Qué verás en pantalla
 
 ```
-Usuario: Explora el proyecto y describe su estructura
+Usuario: ¿Cuáles son los últimos 5 commits?
 
 ✅ Servidor 'filesystem': 11 tools
-✅ Servidor 'custom': 6 tools
+✅ Servidor 'custom': 7 tools
+✅ Servidor 'git': 8 tools
+✅ Servidor 'fetch': 3 tools
+✅ Servidor 'thinking': 3 tools
 
-Total tools disponibles: 17
-   - filesystem__list_directory
-   - filesystem__read_file
-   - custom__list_project_files
-   - custom__get_project_summary
-   ...
+Total tools disponibles: 32
 
-==================================================
 PASO 1
-   ▶ custom__get_project_summary({})
-   ✅ resultado: Proyecto: ai-lab ...
+   ▶ git__git_log({'max_commits': 5})
+   ✅ resultado: 68f2ec6  2026-05-27 ...
 
-==================================================
-PASO 2
+RESPUESTA FINAL:
+Los últimos 5 commits son:
+1. 68f2ec6 — fix: subprocess stdin=DEVNULL...
+...
 
-✅ RESPUESTA FINAL:
-
-El proyecto ai-lab contiene 9 archivos Python con un total de...
-
-💾 Memoria guardada en: C:\...\data\memory.json
+💾 Memoria guardada en: data/memory.json
 ```
 
-### Herramientas disponibles para el agente
+### Herramientas disponibles
 
-El agente tiene acceso a estas herramientas automáticamente:
+**Servidor filesystem** (11 tools — npm oficial):
+listar directorios, leer/escribir/mover archivos, buscar por nombre
 
-**Servidor filesystem (oficial MCP):**
-- Listar directorios
-- Leer y escribir archivos
-- Buscar archivos por nombre o contenido
-- Mover y copiar archivos
+**Servidor custom** (7 tools):
 
-**Servidor custom (mcps/server.py):**
-
-| Herramienta | Qué hace |
+| Tool | Qué hace |
 |---|---|
-| `list_project_files` | Lista archivos con tamaño en una carpeta |
-| `read_project_file` | Lee el contenido de un archivo |
+| `list_project_files` | Lista archivos con tamaño |
+| `read_project_file` | Lee un archivo de texto |
 | `write_project_file` | Crea o sobreescribe un archivo |
-| `search_in_files` | Busca texto en archivos (case-insensitive) |
-| `run_python_file` | Ejecuta un script Python y devuelve la salida |
-| `get_project_summary` | Resumen del proyecto: archivos y líneas de código |
+| `search_in_files` | Busca texto (case-insensitive, glob pattern) |
+| `run_python_file` | Ejecuta un script Python |
+| `get_project_summary` | Resumen: archivos y líneas de código |
+| `semantic_search` | Búsqueda semántica RAG |
+
+**Servidor git** (8 tools):
+
+| Tool | Qué hace |
+|---|---|
+| `git_status` | Estado del repositorio |
+| `git_log` | Historial de commits |
+| `git_diff` | Diferencias en el código |
+| `git_show` | Contenido de un commit |
+| `git_branches` | Ramas locales y remotas |
+| `git_blame` | Autoría línea a línea |
+| `git_search_commits` | Busca en mensajes de commit |
+| `git_file_history` | Historial de un archivo concreto |
+
+**Servidor fetch** (3 tools):
+
+| Tool | Qué hace |
+|---|---|
+| `fetch_url` | Descarga y limpia texto de una URL |
+| `fetch_json` | Consulta una API JSON |
+| `fetch_headers` | Comprueba cabeceras HTTP de una URL |
+
+**Servidor thinking** (3 tools):
+
+| Tool | Qué hace |
+|---|---|
+| `think` | Registra un paso de razonamiento |
+| `think_status` | Muestra la cadena de pensamiento actual |
+| `think_reset` | Limpia la cadena para un nuevo problema |
 
 ---
 
 ## 6. Uso de la API REST
 
-La API permite usar el agente desde cualquier aplicación o herramienta HTTP.
-
-### Iniciar el servidor
-
 ```bash
 uvicorn client.app:app --reload --port 8000
 ```
 
-Documentación interactiva disponible en: `http://localhost:8000/docs`
+Documentación interactiva: `http://localhost:8000/docs`
 
-### Enviar un mensaje al agente
+### Endpoints
 
 ```bash
+# Enviar mensaje al agente
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "¿Qué hace el archivo mcp_agent_loop.py?"}'
+  -d '{"message": "¿Qué hace mcp_agent_loop.py?", "max_steps": 8}'
+
+# Ver historial
+curl http://localhost:8000/memory
+
+# Borrar historial
+curl -X DELETE http://localhost:8000/memory
+
+# Ver tools disponibles
+curl http://localhost:8000/tools
+
+# Estado del servicio
+curl http://localhost:8000/health
 ```
 
-Respuesta:
+Respuesta de `/chat`:
 ```json
 {
-  "answer": "El archivo mcp_agent_loop.py implementa el agente principal...",
+  "answer": "El archivo mcp_agent_loop.py implementa...",
   "steps": 2,
-  "tools_used": ["custom__read_project_file"]
+  "tools_used": ["custom__read_project_file", "git__git_log"]
 }
-```
-
-### Consultar el historial de conversación
-
-```bash
-curl http://localhost:8000/memory
-```
-
-### Borrar el historial
-
-```bash
-curl -X DELETE http://localhost:8000/memory
-```
-
-### Ver las herramientas disponibles
-
-```bash
-curl http://localhost:8000/tools
-```
-
-### Verificar que el servicio está activo
-
-```bash
-curl http://localhost:8000/health
 ```
 
 ---
 
 ## 7. Sistema RAG: indexar y buscar
 
-El sistema RAG permite al agente buscar información en tus archivos usando búsqueda semántica (por significado, no solo por palabras exactas).
+El RAG permite al agente buscar por significado, no solo por palabras exactas.
 
-### Indexar el proyecto
-
-Antes de usar la búsqueda semántica, debes indexar los archivos una vez:
+### Indexar el proyecto (una vez)
 
 ```bash
 python rag/indexer.py
 ```
 
-Verás algo como:
-
-```
-Cargando modelo de embeddings: all-MiniLM-L6-v2
-Conectando a ChromaDB en: ...\data\chroma_db
-Archivos encontrados: 12
-  agent_fs.py → 3 chunks
-  mcp_agent_loop.py → 8 chunks
-  mcps/server.py → 6 chunks
-  ...
-Indexación completa.
-   Archivos procesados : 12
-   Total chunks        : 47
-```
-
-El modelo de embeddings (~80MB) se descarga automáticamente la primera vez.
+El modelo de embeddings (~80MB) se descarga automáticamente la primera vez. La indexación tarda 1-2 minutos.
 
 ### Re-indexar tras cambios
 
-Si modificas archivos del proyecto, vuelve a indexar:
-
 ```bash
 python rag/indexer.py          # actualiza (no duplica)
-python rag/indexer.py --reset  # borra todo y re-indexa desde cero
+python rag/indexer.py --reset  # borra todo y re-indexa
 ```
 
-### Probar la búsqueda semántica
+### Probar la búsqueda directamente
 
 ```bash
 python rag/retriever.py "cómo funciona el agente MCP"
-python rag/retriever.py "function calling loop"
-python rag/retriever.py "memoria persistente"
+python rag/retriever.py "memoria persistente entre sesiones"
 ```
+
+**Nota:** El servidor custom carga el modelo RAG al arrancar (~20s). La primera vez que el agente usa `semantic_search` puede tardar un poco más en iniciar.
 
 ---
 
 ## 8. Memoria de conversaciones
 
-El agente recuerda las conversaciones anteriores automáticamente. El historial se guarda en `data/memory.json`.
+El agente recuerda conversaciones anteriores automáticamente (`data/memory.json`).
 
-- Las últimas 10 conversaciones se incluyen como contexto en cada nueva sesión
-- El historial se limita a 40 entradas para no crecer indefinidamente
-- Para empezar desde cero, borra el archivo o usa el endpoint `DELETE /memory`
+- Límite: 40 entradas
+- Se incluyen las últimas 10 en cada nueva sesión
+- Para empezar desde cero:
 
 ```bash
-# Borrar historial manualmente
-del data\memory.json          # Windows
-rm data/memory.json           # macOS / Linux
-
-# O via API
-curl -X DELETE http://localhost:8000/memory
+del data\memory.json              # Windows
+rm data/memory.json               # macOS/Linux
+curl -X DELETE http://localhost:8000/memory  # via API
 ```
+
+El log de razonamiento (`data/thoughts.jsonl`) registra las cadenas de pensamiento del agente para auditoría. No afecta al funcionamiento.
 
 ---
 
 ## 9. Scripts de ejemplo incluidos
 
-El proyecto incluye scripts de ejemplo que muestran la evolución desde lo más simple hasta el agente completo:
-
-| Script | Qué demuestra | Cómo ejecutar |
-|---|---|---|
-| `client.py` | Chat básico con el modelo | `python client.py` |
-| `tool_client.py` | Leer un archivo e inyectarlo como contexto | `python tool_client.py` |
-| `function_calling.py` | El modelo decide cuándo llamar una función | `python function_calling.py` |
-| `agent_fs.py` | Agente con loop de exploración de archivos | `python agent_fs.py` |
-| `mcp_agent.py` | Primera conexión a un servidor MCP real | `python mcp_agent.py` |
-| `mcp_agent_loop.py` | Agente completo con MCP, RAG y memoria | `python mcp_agent_loop.py` |
+| Script | Qué demuestra |
+|---|---|
+| `client.py` | Chat básico sin herramientas |
+| `tool_client.py` | Inyección manual de contexto desde un archivo |
+| `function_calling.py` | El modelo decide cuándo llamar una función |
+| `agent_fs.py` | Agente con loop y tools propias (sin MCP) |
+| `mcp_agent.py` | Primera conexión a un servidor MCP real |
+| `mcp_agent_loop.py` | Agente completo con todos los servidores |
 
 ---
 
 ## 10. Solución de problemas frecuentes
 
 ### El modelo no responde / Connection refused
-
-Verifica que LM Studio está activo y el servidor local está iniciado en el puerto 1234.
+LM Studio no está activo. Ábrelo, carga el modelo y pulsa **Start Server**.
 
 ### `Servidor 'custom' no disponible`
+1. `BASE_PATH` en `mcps/server.py` no coincide con la ruta real
+2. Dependencias no instaladas en el venv activo
 
-Causas habituales:
-1. `BASE_PATH` en `mcps/server.py` no coincide con la ruta real del proyecto
-2. El entorno virtual no está activado o las dependencias no están instaladas
-
-Prueba ejecutar el servidor directamente para ver el error:
+Prueba directamente:
 ```bash
 python mcps/server.py
 ```
 
-### `npx: command not found` / Servidor filesystem no disponible
-
-Node.js no está instalado o no está en el PATH. Instala Node.js desde [nodejs.org](https://nodejs.org).
-
-### Error al indexar: `No module named 'sentence_transformers'`
-
-Las dependencias no están instaladas en el entorno virtual activo:
+### `Servidor 'git' no disponible`
+Git no está en el PATH o `BASE_PATH` en `mcps/git_server.py` es incorrecta.
 ```bash
-venv\Scripts\activate
-pip install sentence-transformers
+git --version   # debe responder
+python mcps/git_server.py
 ```
 
-### `¿Has ejecutado python rag/indexer.py primero?`
+### `Servidor 'fetch' no disponible`
+```bash
+python mcps/fetch_server.py
+```
 
-El índice RAG no existe. Ejecuta la indexación antes de usar la búsqueda semántica:
+### `npx: command not found`
+Node.js no está instalado. Descárgalo de [nodejs.org](https://nodejs.org).
+
+### `semantic_search` tarda mucho en la primera llamada
+Normal — el servidor custom carga PyTorch y sentence-transformers al arrancar (~20s). Las llamadas siguientes son rápidas (~5s).
+
+### `El índice RAG no existe todavía`
 ```bash
 python rag/indexer.py
 ```
 
-### El agente no termina / alcanza el límite de pasos
+### El agente alcanza el límite de 10 pasos
+Reformula la pregunta de forma más concreta. El límite previene bucles infinitos.
 
-El modelo puede entrar en bucle si la pregunta es ambigua. Intenta reformularla de forma más concreta. El límite de 10 pasos es una protección para evitar bucles infinitos.
+### `No module named 'sentence_transformers'`
+```bash
+venv\Scripts\activate
+pip install sentence-transformers torch
+```
