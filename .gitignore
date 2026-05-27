@@ -12,6 +12,7 @@ build/
 # ChromaDB / datos locales
 data/chroma_db/
 data/memory.json
+data/thoughts.jsonl
 
 # Entorno
 .env

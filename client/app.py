@@ -1,24 +1,15 @@
 """
 client/app.py
 =============
-API REST con FastAPI que expone el agente MCP como servicio HTTP.
-Incluye interfaz web de chat accesible en http://localhost:8000
-
-Endpoints:
-  GET  /              -> interfaz web de chat
-  POST /chat          -> envia un mensaje al agente
-  GET  /memory        -> consulta el historial de conversacion
-  DELETE /memory      -> borra el historial
-  GET  /tools         -> lista las tools MCP disponibles
-  GET  /health        -> estado del servicio
+API REST + interfaz web de chat para el agente MCP.
 
 Uso:
-  uvicorn client.app:app --reload --port 8000
+  .\\run_web.ps1
+  # o: .\\venv\\Scripts\\python.exe -m uvicorn client.app:app --reload --port 8000
+
+Abre http://localhost:8000
 """
 
-import asyncio
-import json
-from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -26,48 +17,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from openai import OpenAI
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
-# =====================================
-# CONFIG
-# =====================================
-
-BASE_PATH   = Path(r"C:\Users\chuwi\ai-lab")
-MEMORY_FILE = BASE_PATH / "data" / "memory.json"
-
-llm = OpenAI(
-    base_url="http://localhost:1234/v1",
-    api_key="lm-studio"
+from agent_core import (
+    BASE_PATH,
+    MODEL_NAME,
+    clear_memory,
+    list_mcp_tools,
+    load_memory,
+    run_agent_query,
 )
 
-SERVERS = {
-    "filesystem": StdioServerParameters(
-        command="npx",
-        args=["-y", "@modelcontextprotocol/server-filesystem", str(BASE_PATH)]
-    ),
-    "custom": StdioServerParameters(
-        command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
-        args=[str(BASE_PATH / "mcps" / "server.py")]
-    ),
-    "git": StdioServerParameters(
-        command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
-        args=[str(BASE_PATH / "mcps" / "git_server.py")]
-    ),
-    "fetch": StdioServerParameters(
-        command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
-        args=[str(BASE_PATH / "mcps" / "fetch_server.py")]
-    ),
-    "thinking": StdioServerParameters(
-        command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
-        args=[str(BASE_PATH / "mcps" / "thinking_server.py")]
-    ),
-}
+# =====================================
+# MODELOS
+# =====================================
 
-# =====================================
-# MODELOS PYDANTIC
-# =====================================
 
 class ChatRequest(BaseModel):
     message: str
@@ -92,196 +54,6 @@ class ToolInfo(BaseModel):
 
 
 # =====================================
-# HELPERS DE MEMORIA
-# =====================================
-
-def load_memory() -> list[dict]:
-    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if MEMORY_FILE.exists():
-        try:
-            return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-def save_memory(messages: list[dict]):
-    to_save = [
-        m for m in messages
-        if m.get("role") in ("user", "assistant")
-        and isinstance(m.get("content"), str)
-        and m.get("content", "").strip()
-    ]
-    to_save = to_save[-40:]
-    MEMORY_FILE.write_text(
-        json.dumps(to_save, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
-
-
-def memory_summary(history: list[dict]) -> str:
-    if not history:
-        return "Sin conversaciones previas."
-    lines = []
-    for m in history[-6:]:
-        role = "Usuario" if m["role"] == "user" else "Asistente"
-        lines.append(f"{role}: {m['content'][:100]}...")
-    return "\n".join(lines)
-
-
-# =====================================
-# TOOL HELPERS
-# =====================================
-
-def mcp_tool_to_openai(tool, server_name: str) -> dict:
-    schema = {}
-    if hasattr(tool, "inputSchema") and tool.inputSchema:
-        schema = {k: v for k, v in tool.inputSchema.items() if k != "title"}
-    return {
-        "type": "function",
-        "function": {
-            "name": f"{server_name}__{tool.name}",
-            "description": tool.description or "",
-            "parameters": schema or {"type": "object", "properties": {}}
-        }
-    }
-
-
-# =====================================
-# AGENTE
-# =====================================
-
-async def _open_servers_and_run(
-    server_list: list[tuple],
-    all_tools: list,
-    tool_map: dict,
-    callback,
-):
-    """Abre servidores MCP recursivamente respetando los cancel scopes de anyio."""
-    if not server_list:
-        return await callback()
-
-    server_name, params = server_list[0]
-    rest = server_list[1:]
-
-    try:
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools_resp = await session.list_tools()
-                for t in tools_resp.tools:
-                    ot = mcp_tool_to_openai(t, server_name)
-                    all_tools.append(ot)
-                    tool_map[ot["function"]["name"]] = (t.name, session)
-                return await _open_servers_and_run(rest, all_tools, tool_map, callback)
-    except Exception as e:
-        print(f"Servidor '{server_name}' no disponible: {e}")
-        return await _open_servers_and_run(rest, all_tools, tool_map, callback)
-
-
-async def run_agent_once(user_input: str, max_steps: int = 8) -> dict:
-    """Ejecuta el agente y devuelve respuesta, pasos y tools usadas."""
-
-    history      = load_memory()
-    all_tools:   list[dict] = []
-    tool_map:    dict[str, tuple] = {}
-    steps_done   = 0
-    tools_used   = []
-    final_answer = ""
-
-    system_prompt = f"""Eres un agente autonomo con acceso a herramientas MCP.
-
-MEMORIA:
-{memory_summary(history)}
-
-Usa las herramientas disponibles. Se conciso.
-Proyecto base: {BASE_PATH}
-
-CUANDO USAR thinking__think:
-Antes de responder preguntas complejas, usa think para razonar paso a paso.
-No es necesario para preguntas simples.
-"""
-
-    async def run_loop():
-        nonlocal steps_done, final_answer
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            *history[-10:],
-            {"role": "user", "content": user_input}
-        ]
-
-        for step in range(max_steps):
-            steps_done = step + 1
-
-            response = llm.chat.completions.create(
-                model="qwen2.5-7b-instruct-1m",
-                messages=messages,
-                tools=all_tools if all_tools else None,
-                tool_choice="auto" if all_tools else None,
-                temperature=0.1,
-                parallel_tool_calls=True
-            )
-
-            msg = response.choices[0].message
-
-            if msg.tool_calls:
-                messages.append({
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        }
-                        for tc in msg.tool_calls
-                    ]
-                })
-
-                async def execute_tool(tc):
-                    openai_name = tc.function.name
-                    tools_used.append(openai_name)
-                    try:
-                        args = json.loads(tc.function.arguments)
-                    except Exception:
-                        args = {}
-                    if openai_name not in tool_map:
-                        return tc.id, f"Tool '{openai_name}' no encontrada."
-                    mcp_name, session = tool_map[openai_name]
-                    try:
-                        result = await session.call_tool(mcp_name, args)
-                        return tc.id, result.content[0].text if result.content else ""
-                    except Exception as e:
-                        return tc.id, f"ERROR: {e}"
-
-                results = await asyncio.gather(*[execute_tool(tc) for tc in msg.tool_calls])
-                for tool_call_id, result_text in results:
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": result_text
-                    })
-
-            else:
-                final_answer = msg.content or ""
-                messages.append({"role": "assistant", "content": final_answer})
-                save_memory(messages)
-                break
-
-    await _open_servers_and_run(list(SERVERS.items()), all_tools, tool_map, run_loop)
-
-    return {
-        "answer": final_answer or "El agente no genero respuesta final.",
-        "steps": steps_done,
-        "tools_used": list(set(tools_used))
-    }
-
-
-# =====================================
 # INTERFAZ WEB
 # =====================================
 
@@ -289,417 +61,715 @@ WEB_UI = """<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ai-lab</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>ai-lab · Chat</title>
   <style>
+    :root {
+      --bg: #0c0e14;
+      --surface: #141820;
+      --surface-2: #1c2230;
+      --border: #2a3142;
+      --text: #e8eaef;
+      --muted: #8b93a7;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --user-bg: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+      --agent-bg: #1c2230;
+      --danger: #ef4444;
+      --ok: #22c55e;
+      --radius: 14px;
+      --shadow: 0 4px 24px rgba(0,0,0,.35);
+      --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+      --mono: "Cascadia Code", "Consolas", monospace;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
+    html, body { height: 100%; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0f1117;
-      color: #e0e0e0;
-      height: 100vh;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
       display: flex;
       flex-direction: column;
+      overflow: hidden;
+    }
+    body::before {
+      content: "";
+      position: fixed; inset: 0; z-index: -1;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(59,130,246,.12), transparent),
+        var(--bg);
     }
 
     /* HEADER */
     header {
-      padding: 14px 24px;
-      background: #1a1d27;
-      border-bottom: 1px solid #2a2d3a;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
       flex-shrink: 0;
+      padding: 12px 20px;
+      background: rgba(20, 24, 32, .85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
     }
-    header h1 { font-size: 1.1rem; font-weight: 600; color: #fff; }
-    header span { font-size: 0.78rem; color: #666; }
-
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .brand-icon {
+      width: 36px; height: 36px; border-radius: 10px;
+      background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      display: grid; place-items: center; font-size: 1rem; flex-shrink: 0;
+    }
+    .brand h1 { font-size: 1rem; font-weight: 600; white-space: nowrap; }
+    .model-badge {
+      font-size: 0.7rem; color: var(--muted); background: var(--surface-2);
+      border: 1px solid var(--border); padding: 2px 8px; border-radius: 999px;
+      max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .header-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .btn-ghost {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 8px; padding: 7px 12px; font-size: 0.8rem; cursor: pointer;
+      transition: color .15s, border-color .15s, background .15s;
+    }
+    .btn-ghost:hover { color: var(--text); border-color: #444c5e; background: var(--surface-2); }
+    .btn-ghost.danger:hover { color: var(--danger); border-color: var(--danger); }
+    .status-pill {
+      display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--muted);
+      padding: 6px 10px; border-radius: 999px; background: var(--surface-2);
+      border: 1px solid var(--border);
+    }
     #status-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: #444;
-      display: inline-block;
-      margin-right: 6px;
-      transition: background 0.3s;
+      width: 7px; height: 7px; border-radius: 50%; background: #555;
+      transition: background .3s, box-shadow .3s;
     }
-    #status-dot.ok  { background: #4caf50; }
-    #status-dot.err { background: #f44336; }
+    #status-dot.ok { background: var(--ok); box-shadow: 0 0 8px rgba(34,197,94,.5); }
+    #status-dot.err { background: var(--danger); }
 
-    /* CHAT */
+    /* MAIN */
+    main { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+    #chat-wrap {
+      flex: 1; overflow-y: auto; scroll-behavior: smooth;
+      padding: 20px 16px 8px;
+    }
     #chat {
-      flex: 1;
-      overflow-y: auto;
-      padding: 24px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
+      max-width: 720px; margin: 0 auto;
+      display: flex; flex-direction: column; gap: 20px;
     }
 
-    .msg {
-      max-width: 78%;
-      padding: 12px 16px;
-      border-radius: 12px;
-      line-height: 1.55;
-      font-size: 0.92rem;
-      white-space: pre-wrap;
-      word-break: break-word;
+    /* WELCOME */
+    .welcome {
+      text-align: center; padding: 32px 16px 24px;
+      animation: fadeIn .4s ease;
     }
-    .msg.user {
-      align-self: flex-end;
-      background: #2563eb;
-      color: #fff;
-      border-bottom-right-radius: 4px;
+    .welcome h2 { font-size: 1.35rem; font-weight: 600; margin-bottom: 8px; }
+    .welcome p { color: var(--muted); font-size: 0.9rem; line-height: 1.5; max-width: 420px; margin: 0 auto 20px; }
+    .suggestions {
+      display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
     }
-    .msg.agent {
-      align-self: flex-start;
-      background: #1e2130;
-      border: 1px solid #2a2d3a;
+    .suggestion {
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 10px 14px; border-radius: 12px;
+      font-size: 0.82rem; cursor: pointer; text-align: left; max-width: 280px;
+      transition: border-color .15s, background .15s, transform .1s;
+    }
+    .suggestion:hover { border-color: var(--accent); background: var(--surface-2); transform: translateY(-1px); }
+
+    /* MESSAGES */
+    .row {
+      display: flex; gap: 10px; align-items: flex-end;
+      animation: slideUp .25s ease;
+    }
+    .row.user { flex-direction: row-reverse; }
+    .avatar {
+      width: 32px; height: 32px; border-radius: 10px; flex-shrink: 0;
+      display: grid; place-items: center; font-size: 0.75rem; font-weight: 600;
+    }
+    .row.user .avatar { background: var(--accent); color: #fff; }
+    .row.agent .avatar { background: var(--surface-2); border: 1px solid var(--border); color: #7dd3fc; }
+    .bubble-wrap { max-width: min(85%, 560px); display: flex; flex-direction: column; gap: 4px; }
+    .row.user .bubble-wrap { align-items: flex-end; }
+    .bubble {
+      padding: 12px 16px; border-radius: var(--radius); line-height: 1.6;
+      font-size: 0.92rem; word-break: break-word;
+    }
+    .row.user .bubble {
+      background: var(--user-bg); color: #fff;
+      border-bottom-right-radius: 4px; box-shadow: var(--shadow);
+    }
+    .row.agent .bubble {
+      background: var(--agent-bg); border: 1px solid var(--border);
       border-bottom-left-radius: 4px;
     }
-    .msg.system {
-      align-self: center;
-      background: transparent;
-      color: #555;
-      font-size: 0.78rem;
-      border: none;
-      padding: 4px 0;
+    .bubble .content p { margin: 0 0 .6em; }
+    .bubble .content p:last-child { margin-bottom: 0; }
+    .bubble .content code {
+      font-family: var(--mono); font-size: 0.85em;
+      background: rgba(0,0,0,.3); padding: 2px 6px; border-radius: 4px;
+    }
+    .bubble .content pre {
+      background: #0a0c10; border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px; overflow-x: auto; margin: .5em 0;
+      font-family: var(--mono); font-size: 0.82rem; line-height: 1.45;
+    }
+    .bubble .content pre code { background: none; padding: 0; }
+    .bubble .content ul, .bubble .content ol { margin: .4em 0 .6em 1.2em; }
+    .bubble .content strong { color: #fff; font-weight: 600; }
+    .row.agent .bubble .content strong { color: #f0f4ff; }
+
+    .msg-footer {
+      display: flex; align-items: center; gap: 8px; font-size: 0.72rem; color: var(--muted);
+    }
+    .row.user .msg-footer { justify-content: flex-end; }
+    .tool-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+    .tool-tag {
+      font-size: 0.68rem; padding: 2px 6px; border-radius: 4px;
+      background: rgba(59,130,246,.15); color: #93c5fd; font-family: var(--mono);
+    }
+    .btn-copy {
+      background: none; border: none; color: var(--muted); cursor: pointer;
+      padding: 2px 6px; border-radius: 4px; font-size: 0.7rem;
+    }
+    .btn-copy:hover { color: var(--text); background: var(--surface-2); }
+
+    .system-banner {
+      text-align: center; font-size: 0.78rem; color: var(--muted);
+      padding: 6px 12px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 999px;
+      align-self: center; max-width: 90%;
+    }
+    .error-banner {
+      background: rgba(239,68,68,.1); border-color: rgba(239,68,68,.3);
+      color: #fca5a5; padding: 12px 16px; border-radius: var(--radius);
+      font-size: 0.88rem; max-width: 720px; margin: 0 auto;
     }
 
-    .meta {
-      font-size: 0.72rem;
-      color: #555;
-      margin-top: 6px;
+    /* TYPING */
+    .typing-row .bubble {
+      display: flex; flex-direction: column; gap: 10px; min-width: 200px;
     }
+    .typing-bar {
+      height: 3px; background: var(--border); border-radius: 2px; overflow: hidden;
+    }
+    .typing-bar span {
+      display: block; height: 100%; width: 30%; background: var(--accent);
+      border-radius: 2px; animation: indeterminate 1.4s ease infinite;
+    }
+    @keyframes indeterminate {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+    .typing-meta { font-size: 0.75rem; color: var(--muted); }
 
-    /* TYPING INDICATOR */
-    .typing {
-      align-self: flex-start;
-      background: #1e2130;
-      border: 1px solid #2a2d3a;
-      border-radius: 12px;
-      border-bottom-left-radius: 4px;
-      padding: 14px 18px;
-      display: flex;
-      gap: 5px;
-      align-items: center;
+    /* SCROLL FAB */
+    #scroll-fab {
+      position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%) translateY(12px);
+      opacity: 0; pointer-events: none;
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 8px 14px; border-radius: 999px;
+      font-size: 0.8rem; cursor: pointer; box-shadow: var(--shadow);
+      transition: opacity .2s, transform .2s;
     }
-    .typing span {
-      width: 7px; height: 7px;
-      background: #555;
-      border-radius: 50%;
-      animation: bounce 1.2s infinite;
-    }
-    .typing span:nth-child(2) { animation-delay: 0.2s; }
-    .typing span:nth-child(3) { animation-delay: 0.4s; }
-    @keyframes bounce {
-      0%, 80%, 100% { transform: translateY(0); }
-      40%           { transform: translateY(-6px); background: #2563eb; }
-    }
+    #scroll-fab.visible { opacity: 1; pointer-events: auto; transform: translateX(-50%) translateY(0); }
 
     /* INPUT */
-    #input-area {
-      padding: 16px 24px;
-      background: #1a1d27;
-      border-top: 1px solid #2a2d3a;
-      display: flex;
-      gap: 10px;
-      flex-shrink: 0;
+    #composer {
+      flex-shrink: 0; padding: 12px 16px 16px;
+      background: rgba(20, 24, 32, .9); backdrop-filter: blur(12px);
+      border-top: 1px solid var(--border);
     }
-
+    .composer-inner {
+      max-width: 720px; margin: 0 auto;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 16px; padding: 10px 10px 10px 14px;
+      display: flex; gap: 8px; align-items: flex-end;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .composer-inner:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
     #msg-input {
-      flex: 1;
-      background: #0f1117;
-      border: 1px solid #2a2d3a;
-      border-radius: 8px;
-      color: #e0e0e0;
-      padding: 10px 14px;
-      font-size: 0.92rem;
-      resize: none;
-      outline: none;
-      min-height: 44px;
-      max-height: 140px;
-      line-height: 1.5;
-      transition: border-color 0.2s;
+      flex: 1; background: transparent; border: none; color: var(--text);
+      font-size: 0.95rem; resize: none; outline: none;
+      min-height: 24px; max-height: 140px; line-height: 1.5;
+      font-family: inherit;
     }
-    #msg-input:focus { border-color: #2563eb; }
-    #msg-input::placeholder { color: #444; }
-
+    #msg-input::placeholder { color: #5c6378; }
+    #msg-input:disabled { opacity: .5; }
+    .composer-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .hint-keys { font-size: 0.65rem; color: #5c6378; white-space: nowrap; }
     #send-btn {
-      background: #2563eb;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 0 20px;
-      font-size: 0.92rem;
-      cursor: pointer;
-      transition: background 0.2s, opacity 0.2s;
-      white-space: nowrap;
-      align-self: flex-end;
-      height: 44px;
+      width: 40px; height: 40px; border-radius: 10px; border: none;
+      background: var(--accent); color: #fff; cursor: pointer;
+      display: grid; place-items: center; transition: background .15s, transform .1s;
     }
-    #send-btn:hover:not(:disabled) { background: #1d4ed8; }
-    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #send-btn:hover:not(:disabled) { background: var(--accent-hover); }
+    #send-btn:active:not(:disabled) { transform: scale(.96); }
+    #send-btn:disabled { opacity: .35; cursor: not-allowed; }
+    #send-btn svg { width: 18px; height: 18px; }
 
-    /* SIDEBAR TOOLS */
+    /* SIDEBAR */
+    #overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.5);
+      opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 20;
+    }
+    #overlay.open { opacity: 1; pointer-events: auto; }
     #sidebar {
-      position: fixed;
-      right: 0; top: 0; bottom: 0;
-      width: 280px;
-      background: #1a1d27;
-      border-left: 1px solid #2a2d3a;
-      padding: 16px;
-      overflow-y: auto;
-      transform: translateX(100%);
-      transition: transform 0.25s;
-      z-index: 10;
+      position: fixed; top: 0; right: 0; bottom: 0; width: min(320px, 92vw);
+      background: var(--surface); border-left: 1px solid var(--border);
+      z-index: 30; transform: translateX(100%); transition: transform .25s ease;
+      display: flex; flex-direction: column;
     }
     #sidebar.open { transform: translateX(0); }
-    #sidebar h2 { font-size: 0.85rem; color: #888; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
-    .tool-item { padding: 8px 10px; border-radius: 6px; margin-bottom: 4px; font-size: 0.78rem; }
-    .tool-item .tool-name { color: #7dd3fc; font-family: monospace; }
-    .tool-item .tool-desc { color: #666; margin-top: 2px; }
-    .tool-server { font-size: 0.7rem; color: #444; margin-top: 2px; }
-
-    #tools-btn {
-      background: transparent;
-      border: 1px solid #2a2d3a;
-      color: #888;
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-size: 0.78rem;
-      cursor: pointer;
+    .sidebar-head {
+      padding: 16px; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
     }
-    #tools-btn:hover { border-color: #555; color: #ccc; }
-
-    #clear-btn {
-      background: transparent;
-      border: 1px solid #2a2d3a;
-      color: #888;
-      border-radius: 6px;
-      padding: 4px 10px;
-      font-size: 0.78rem;
-      cursor: pointer;
+    .sidebar-head h2 { font-size: 0.9rem; font-weight: 600; }
+    #tools-search {
+      margin: 12px 16px 0; padding: 8px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text);
+      font-size: 0.85rem; outline: none; width: calc(100% - 32px);
     }
-    #clear-btn:hover { border-color: #f44336; color: #f44336; }
+    #tools-search:focus { border-color: var(--accent); }
+    #tools-list { flex: 1; overflow-y: auto; padding: 12px 16px 24px; }
+    .tool-server { font-size: 0.68rem; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--muted); margin: 14px 0 6px; }
+    .tool-item {
+      padding: 10px 12px; border-radius: 8px; margin-bottom: 4px;
+      background: var(--surface-2); border: 1px solid transparent;
+      cursor: default; transition: border-color .15s;
+    }
+    .tool-item:hover { border-color: var(--border); }
+    .tool-name { font-family: var(--mono); font-size: 0.78rem; color: #7dd3fc; }
+    .tool-desc { font-size: 0.75rem; color: var(--muted); margin-top: 4px; line-height: 1.4; }
 
-    .header-actions { display: flex; gap: 8px; align-items: center; }
+    /* TOAST */
+    #toast {
+      position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: var(--surface-2); border: 1px solid var(--border);
+      color: var(--text); padding: 10px 18px; border-radius: 10px; font-size: 0.85rem;
+      box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+      transition: opacity .25s, transform .25s; z-index: 50;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-    /* SCROLLBAR */
-    ::-webkit-scrollbar { width: 5px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #2a2d3a; border-radius: 3px; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    @media (max-width: 600px) {
+      header { padding: 10px 12px; }
+      .model-badge { display: none; }
+      .status-pill span:last-child { display: none; }
+      .hint-keys { display: none; }
+    }
   </style>
 </head>
 <body>
 
 <header>
-  <h1><span id="status-dot"></span>ai-lab</h1>
+  <div class="brand">
+    <div class="brand-icon" aria-hidden="true">AI</div>
+    <div>
+      <h1>ai-lab</h1>
+      <div class="model-badge" id="model-badge" title="Modelo activo">—</div>
+    </div>
+  </div>
   <div class="header-actions">
-    <button id="clear-btn" title="Borrar historial">Limpiar</button>
-    <button id="tools-btn" title="Ver tools disponibles">Tools</button>
-    <span id="status-text">conectando...</span>
+    <div class="status-pill" title="Estado del servidor">
+      <span id="status-dot"></span>
+      <span id="status-text">conectando</span>
+    </div>
+    <button type="button" class="btn-ghost" id="tools-btn" aria-label="Ver herramientas MCP">Tools</button>
+    <button type="button" class="btn-ghost danger" id="clear-btn" aria-label="Borrar historial">Limpiar</button>
   </div>
 </header>
 
-<div id="chat"></div>
+<main>
+  <div id="chat-wrap" role="log" aria-live="polite" aria-relevant="additions">
+    <div id="chat"></div>
+  </div>
+  <button type="button" id="scroll-fab" aria-label="Ir al final">↓ Nuevos mensajes</button>
 
-<div id="input-area">
-  <textarea id="msg-input" placeholder="Escribe tu pregunta..." rows="1"></textarea>
-  <button id="send-btn" disabled>Enviar</button>
-</div>
+  <div id="composer">
+    <div class="composer-inner">
+      <textarea id="msg-input" rows="1" placeholder="Pregunta sobre el proyecto, código, git…" aria-label="Mensaje"></textarea>
+      <div class="composer-actions">
+        <span class="hint-keys">Enter enviar · Shift+Enter nueva línea</span>
+        <button type="button" id="send-btn" disabled aria-label="Enviar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</main>
 
-<div id="sidebar">
-  <h2>Tools disponibles</h2>
-  <div id="tools-list">Cargando...</div>
-</div>
+<div id="overlay" aria-hidden="true"></div>
+<aside id="sidebar" aria-label="Panel de herramientas">
+  <div class="sidebar-head">
+    <h2>Herramientas MCP</h2>
+    <button type="button" class="btn-ghost" id="sidebar-close" aria-label="Cerrar">✕</button>
+  </div>
+  <input type="search" id="tools-search" placeholder="Buscar tool…" autocomplete="off">
+  <div id="tools-list">Cargando…</div>
+</aside>
+
+<div id="toast" role="status"></div>
 
 <script>
-  const chat     = document.getElementById('chat');
-  const input    = document.getElementById('msg-input');
-  const sendBtn  = document.getElementById('send-btn');
-  const dot      = document.getElementById('status-dot');
+  const chatWrap = document.getElementById('chat-wrap');
+  const chat = document.getElementById('chat');
+  const input = document.getElementById('msg-input');
+  const sendBtn = document.getElementById('send-btn');
+  const dot = document.getElementById('status-dot');
   const statusTx = document.getElementById('status-text');
-  const sidebar  = document.getElementById('sidebar');
-  const toolsList= document.getElementById('tools-list');
-  const toolsBtn = document.getElementById('tools-btn');
-  const clearBtn = document.getElementById('clear-btn');
+  const modelBadge = document.getElementById('model-badge');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+  const toolsList = document.getElementById('tools-list');
+  const toolsSearch = document.getElementById('tools-search');
+  const scrollFab = document.getElementById('scroll-fab');
+  const toast = document.getElementById('toast');
 
-  // ── Utilidades ──────────────────────────────────────────
+  let isBusy = false;
+  let stickToBottom = true;
+  let typingTimer = null;
+  let allToolsCache = [];
 
-  function addMsg(role, text, meta) {
-    const div = document.createElement('div');
-    div.className = `msg ${role}`;
-    div.textContent = text;
-    if (meta) {
-      const m = document.createElement('div');
-      m.className = 'meta';
-      m.textContent = meta;
-      div.appendChild(m);
+  const SUGGESTIONS = [
+    "¿Qué archivos Python hay y qué hace cada uno?",
+    "Resume el estado del repositorio git",
+    "Busca en el código dónde se define el agente MCP",
+    "Explícame el flujo desde la pregunta hasta la respuesta",
+  ];
+
+  function escapeHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderMarkdown(text) {
+    let h = escapeHtml(text);
+    h = h.replace(/```([\\s\\S]*?)```/g, (_, code) => `<pre><code>${code.trim()}</code></pre>`);
+    h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+    h = h.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+    h = h.replace(/^### (.+)$/gm, '<p><strong>$1</strong></p>');
+    h = h.replace(/^## (.+)$/gm, '<p><strong>$1</strong></p>');
+    h = h.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+    h = h.replace(/(<li>.*<\\/li>\\n?)+/gs, m => `<ul>${m}</ul>`);
+  h = h.split(/\\n{2,}/).map(p => {
+      if (/^<(pre|ul|p)/.test(p.trim())) return p;
+      return `<p>${p.replace(/\\n/g, '<br>')}</p>`;
+    }).join('');
+    return h;
+  }
+
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2800);
+  }
+
+  function scrollToBottom(smooth = true) {
+    chatWrap.scrollTo({ top: chatWrap.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  }
+
+  function updateScrollFab() {
+    const nearBottom = chatWrap.scrollHeight - chatWrap.scrollTop - chatWrap.clientHeight < 80;
+    stickToBottom = nearBottom;
+    scrollFab.classList.toggle('visible', !nearBottom && chat.children.length > 1);
+  }
+
+  chatWrap.addEventListener('scroll', updateScrollFab);
+  scrollFab.addEventListener('click', () => { stickToBottom = true; scrollToBottom(); });
+
+  function hideWelcome() {
+    const w = document.getElementById('welcome');
+    if (w) w.remove();
+  }
+
+  function showWelcome() {
+    if (document.getElementById('welcome')) return;
+    const el = document.createElement('div');
+    el.id = 'welcome';
+    el.className = 'welcome';
+    el.innerHTML = `
+      <h2>¿En qué te ayudo?</h2>
+      <p>Pregunta sobre tu proyecto ai-lab. El agente puede leer archivos, consultar git, buscar en el código y razonar paso a paso.</p>
+      <div class="suggestions"></div>`;
+    const box = el.querySelector('.suggestions');
+    SUGGESTIONS.forEach(text => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'suggestion';
+      b.textContent = text;
+      b.addEventListener('click', () => { input.value = text; input.focus(); resizeInput(); });
+      box.appendChild(b);
+    });
+    chat.appendChild(el);
+  }
+
+  function addSystemBanner(text) {
+    hideWelcome();
+    const el = document.createElement('div');
+    el.className = 'system-banner';
+    el.textContent = text;
+    chat.appendChild(el);
+    if (stickToBottom) scrollToBottom();
+  }
+
+  function addError(text) {
+    hideWelcome();
+    const el = document.createElement('div');
+    el.className = 'error-banner';
+    el.textContent = text;
+    chat.appendChild(el);
+    if (stickToBottom) scrollToBottom();
+  }
+
+  function addMessage(role, text, meta = {}) {
+    hideWelcome();
+    const row = document.createElement('div');
+    row.className = `row ${role}`;
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = role === 'user' ? 'Tú' : 'AI';
+    avatar.setAttribute('aria-hidden', 'true');
+
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-wrap';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const content = document.createElement('div');
+    content.className = 'content';
+    if (role === 'agent') content.innerHTML = renderMarkdown(text);
+    else content.textContent = text;
+    bubble.appendChild(content);
+    wrap.appendChild(bubble);
+
+    const footer = document.createElement('div');
+    footer.className = 'msg-footer';
+    const time = document.createElement('span');
+    time.textContent = new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+    footer.appendChild(time);
+
+    if (role === 'agent') {
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'btn-copy';
+      copyBtn.textContent = 'Copiar';
+      copyBtn.addEventListener('click', async () => {
+        await navigator.clipboard.writeText(text);
+        showToast('Respuesta copiada');
+      });
+      footer.appendChild(copyBtn);
+      if (meta.tools?.length) {
+        const tags = document.createElement('div');
+        tags.className = 'tool-tags';
+        meta.tools.slice(0, 5).forEach(t => {
+          const tag = document.createElement('span');
+          tag.className = 'tool-tag';
+          tag.textContent = t.replace(/^\\w+__/, '');
+          tags.appendChild(tag);
+        });
+        if (meta.tools.length > 5) {
+          const more = document.createElement('span');
+          more.className = 'tool-tag';
+          more.textContent = `+${meta.tools.length - 5}`;
+          tags.appendChild(more);
+        }
+        wrap.appendChild(tags);
+      }
+      if (meta.steps) {
+        const steps = document.createElement('span');
+        steps.textContent = ` · ${meta.steps} paso(s)`;
+        footer.appendChild(steps);
+      }
     }
-    chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
-    return div;
+    wrap.appendChild(footer);
+    row.append(avatar, wrap);
+    chat.appendChild(row);
+    if (stickToBottom) scrollToBottom();
   }
 
   function addTyping() {
-    const div = document.createElement('div');
-    div.className = 'typing';
-    div.id = 'typing';
-    div.innerHTML = '<span></span><span></span><span></span>';
-    chat.appendChild(div);
-    chat.scrollTop = chat.scrollHeight;
+    hideWelcome();
+    const row = document.createElement('div');
+    row.className = 'row agent typing-row';
+    row.id = 'typing-row';
+    row.innerHTML = `
+      <div class="avatar" aria-hidden="true">AI</div>
+      <div class="bubble-wrap">
+        <div class="bubble">
+          <div class="typing-bar"><span></span></div>
+          <div class="typing-meta" id="typing-meta">Iniciando agente…</div>
+        </div>
+      </div>`;
+    chat.appendChild(row);
+    let sec = 0;
+    typingTimer = setInterval(() => {
+      sec++;
+      const el = document.getElementById('typing-meta');
+      if (!el) return;
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      const t = m ? `${m}:${String(s).padStart(2,'0')}` : `${s}s`;
+      el.textContent = `Procesando (${t}) — puede tardar con LM Studio y tools MCP`;
+    }, 1000);
+    if (stickToBottom) scrollToBottom();
   }
 
   function removeTyping() {
-    const t = document.getElementById('typing');
-    if (t) t.remove();
+    clearInterval(typingTimer);
+    document.getElementById('typing-row')?.remove();
   }
 
-  function setStatus(ok) {
+  function setBusy(busy) {
+    isBusy = busy;
+    input.disabled = busy;
+    sendBtn.disabled = busy || dot.classList.contains('err');
+  }
+
+  function setStatus(ok, model) {
     dot.className = ok ? 'ok' : 'err';
-    statusTx.textContent = ok ? 'conectado' : 'sin conexion';
-    sendBtn.disabled = !ok;
+    statusTx.textContent = ok ? 'listo' : 'offline';
+    if (model) modelBadge.textContent = model;
+    sendBtn.disabled = isBusy || !ok;
   }
 
-  // ── Health check ────────────────────────────────────────
+  function resizeInput() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+  }
+
+  function openSidebar(open) {
+    sidebar.classList.toggle('open', open);
+    overlay.classList.toggle('open', open);
+    if (open) loadTools();
+  }
 
   async function checkHealth() {
     try {
       const r = await fetch('/health');
       if (r.ok) {
         const d = await r.json();
-        setStatus(true);
-        addMsg('system', `Modelo: ${d.model}`);
-      } else {
-        setStatus(false);
-      }
+        setStatus(true, d.model);
+        addSystemBanner(`Conectado · ${d.model}`);
+      } else setStatus(false);
     } catch {
       setStatus(false);
-      addMsg('system', 'No se puede conectar con la API. Verifica que el servidor esta activo.');
+      addError('No hay conexión con la API. Ejecuta .\\\\run_web.ps1 y recarga esta página.');
     }
   }
-
-  // ── Cargar historial ────────────────────────────────────
 
   async function loadHistory() {
     try {
       const r = await fetch('/memory');
       const d = await r.json();
       if (d.count > 0) {
-        addMsg('system', `Historial cargado: ${d.count} mensajes previos`);
-        d.messages.slice(-6).forEach(m => {
-          addMsg(m.role === 'user' ? 'user' : 'agent', m.content);
+        hideWelcome();
+        addSystemBanner(`${d.count} mensajes en el historial`);
+        d.messages.slice(-8).forEach(m => {
+          addMessage(m.role === 'user' ? 'user' : 'agent', m.content);
         });
-      }
-    } catch { /* sin historial */ }
+      } else showWelcome();
+    } catch { showWelcome(); }
   }
-
-  // ── Enviar mensaje ──────────────────────────────────────
 
   async function sendMessage() {
     const text = input.value.trim();
-    if (!text) return;
-
+    if (!text || isBusy) return;
     input.value = '';
-    input.style.height = 'auto';
-    sendBtn.disabled = true;
-
-    addMsg('user', text);
+    resizeInput();
+    setBusy(true);
+    addMessage('user', text);
     addTyping();
-
     try {
       const r = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, max_steps: 8 })
+        body: JSON.stringify({ message: text, max_steps: 8 }),
       });
-
       removeTyping();
-
       if (!r.ok) {
-        const err = await r.json();
-        addMsg('system', `Error: ${err.detail || r.statusText}`);
+        const err = await r.json().catch(() => ({}));
+        const detail = typeof err.detail === 'string' ? err.detail : r.statusText;
+        addError(detail || 'Error del servidor');
       } else {
         const d = await r.json();
-        const meta = `${d.steps} paso${d.steps !== 1 ? 's' : ''} · ${d.tools_used.length} tool${d.tools_used.length !== 1 ? 's' : ''}: ${d.tools_used.join(', ') || 'ninguna'}`;
-        addMsg('agent', d.answer, meta);
+        addMessage('agent', d.answer, { steps: d.steps, tools: d.tools_used });
       }
     } catch (e) {
       removeTyping();
-      addMsg('system', `Error de red: ${e.message}`);
+      addError(`Error de red: ${e.message}`);
     }
-
-    sendBtn.disabled = false;
+    setBusy(false);
     input.focus();
   }
 
-  // ── Tools sidebar ───────────────────────────────────────
+  function renderToolsList(tools, filter = '') {
+    const q = filter.trim().toLowerCase();
+    const filtered = q
+      ? tools.filter(t => (t.name + t.description + t.server).toLowerCase().includes(q))
+      : tools;
+    if (!filtered.length) {
+      toolsList.innerHTML = '<p style="color:var(--muted);font-size:.85rem">Sin resultados</p>';
+      return;
+    }
+    const byServer = {};
+    filtered.forEach(t => {
+      if (!byServer[t.server]) byServer[t.server] = [];
+      byServer[t.server].push(t);
+    });
+    toolsList.innerHTML = '';
+    Object.entries(byServer).forEach(([server, items]) => {
+      const h = document.createElement('div');
+      h.className = 'tool-server';
+      h.textContent = server;
+      toolsList.appendChild(h);
+      items.forEach(t => {
+        const item = document.createElement('div');
+        item.className = 'tool-item';
+        const desc = (t.description || '').slice(0, 100);
+        item.innerHTML = `<div class="tool-name">${escapeHtml(t.name)}</div><div class="tool-desc">${escapeHtml(desc)}</div>`;
+        toolsList.appendChild(item);
+      });
+    });
+  }
 
   async function loadTools() {
+    toolsList.textContent = 'Cargando…';
     try {
       const r = await fetch('/tools');
       const d = await r.json();
-      if (!d.tools || d.tools.length === 0) {
-        toolsList.innerHTML = '<div style="color:#555;font-size:0.8rem">Sin tools disponibles</div>';
-        return;
-      }
-      // Agrupar por servidor
-      const byServer = {};
-      d.tools.forEach(t => {
-        if (!byServer[t.server]) byServer[t.server] = [];
-        byServer[t.server].push(t);
-      });
-      toolsList.innerHTML = '';
-      Object.entries(byServer).forEach(([server, tools]) => {
-        const h = document.createElement('div');
-        h.style.cssText = 'color:#555;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;margin:12px 0 6px';
-        h.textContent = server;
-        toolsList.appendChild(h);
-        tools.forEach(t => {
-          const item = document.createElement('div');
-          item.className = 'tool-item';
-          item.innerHTML = `<div class="tool-name">${t.name}</div><div class="tool-desc">${t.description.slice(0, 80)}${t.description.length > 80 ? '...' : ''}</div>`;
-          toolsList.appendChild(item);
-        });
-      });
+      allToolsCache = d.tools || [];
+      renderToolsList(allToolsCache, toolsSearch.value);
     } catch {
-      toolsList.innerHTML = '<div style="color:#555;font-size:0.8rem">Error cargando tools</div>';
+      toolsList.innerHTML = '<p style="color:var(--muted)">Error al cargar</p>';
     }
   }
 
-  toolsBtn.addEventListener('click', () => {
-    sidebar.classList.toggle('open');
-    if (sidebar.classList.contains('open')) loadTools();
-  });
+  toolsSearch.addEventListener('input', () => renderToolsList(allToolsCache, toolsSearch.value));
 
-  // ── Limpiar historial ───────────────────────────────────
+  document.getElementById('tools-btn').addEventListener('click', () => openSidebar(true));
+  document.getElementById('sidebar-close').addEventListener('click', () => openSidebar(false));
+  overlay.addEventListener('click', () => openSidebar(false));
 
-  clearBtn.addEventListener('click', async () => {
-    if (!confirm('Borrar el historial de conversacion?')) return;
+  document.getElementById('clear-btn').addEventListener('click', async () => {
+    if (!confirm('¿Borrar todo el historial de conversación?')) return;
     await fetch('/memory', { method: 'DELETE' });
     chat.innerHTML = '';
-    addMsg('system', 'Historial borrado.');
+    showWelcome();
+    showToast('Historial borrado');
   });
 
-  // ── Input: auto-resize + Enter para enviar ──────────────
-
-  input.addEventListener('input', () => {
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
-  });
-
+  input.addEventListener('input', resizeInput);
   input.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (!sendBtn.disabled) sendMessage();
     }
   });
-
   sendBtn.addEventListener('click', sendMessage);
-
-  // ── Init ────────────────────────────────────────────────
 
   (async () => {
     await checkHealth();
@@ -712,21 +782,21 @@ WEB_UI = """<!DOCTYPE html>
 
 
 # =====================================
-# FASTAPI APP
+# FASTAPI
 # =====================================
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("ai-lab API iniciada — http://localhost:8000")
+    print("ai-lab web — http://localhost:8000")
     yield
-    print("ai-lab API detenida")
 
 
 app = FastAPI(
     title="ai-lab Agent API",
-    description="API REST para el agente MCP de ai-lab",
-    version="1.0.0",
-    lifespan=lifespan
+    description="Chat web + API REST para el agente MCP",
+    version="1.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -737,71 +807,48 @@ app.add_middleware(
 )
 
 
-# =====================================
-# ENDPOINTS
-# =====================================
-
 @app.get("/", response_class=HTMLResponse)
 async def web_ui():
-    """Interfaz web de chat."""
     return WEB_UI
 
 
 @app.get("/health")
 async def health():
-    """Estado del servicio."""
-    return {"status": "ok", "model": "qwen2.5-7b-instruct-1m", "base": str(BASE_PATH)}
+    return {
+        "status": "ok",
+        "model": MODEL_NAME,
+        "base": str(BASE_PATH),
+        "lm_studio": "http://localhost:1234/v1",
+    }
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    """Envia un mensaje al agente y obtiene respuesta."""
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="El mensaje no puede estar vacio.")
-    result = await run_agent_once(req.message, max_steps=req.max_steps)
+    try:
+        result = await run_agent_query(req.message, max_steps=req.max_steps)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     return ChatResponse(**result)
 
 
 @app.get("/memory", response_model=MemoryResponse)
 async def get_memory():
-    """Devuelve el historial de conversacion."""
     history = load_memory()
     return MemoryResponse(messages=history, count=len(history))
 
 
 @app.delete("/memory")
-async def clear_memory():
-    """Borra el historial de conversacion."""
-    if MEMORY_FILE.exists():
-        MEMORY_FILE.unlink()
+async def delete_memory():
+    clear_memory()
     return {"status": "ok", "message": "Historial borrado."}
 
 
 @app.get("/tools")
 async def list_tools():
-    """Lista las tools MCP disponibles."""
-    tools_info: list[ToolInfo] = []
-
-    async def collect(server_name, params):
-        try:
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    resp = await session.list_tools()
-                    for t in resp.tools:
-                        tools_info.append(ToolInfo(
-                            name=t.name,
-                            description=t.description or "",
-                            server=server_name
-                        ))
-        except Exception as e:
-            tools_info.append(ToolInfo(
-                name=f"ERROR_{server_name}",
-                description=str(e),
-                server=server_name
-            ))
-
-    for server_name, params in SERVERS.items():
-        await collect(server_name, params)
-
-    return {"tools": tools_info, "count": len(tools_info)}
+    tools = await list_mcp_tools()
+    return {
+        "tools": [ToolInfo(**t) for t in tools],
+        "count": len(tools),
+    }
