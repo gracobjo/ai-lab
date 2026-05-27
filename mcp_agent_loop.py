@@ -55,6 +55,10 @@ SERVERS = {
         command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
         args=[str(BASE_PATH / "mcps" / "fetch_server.py")]
     ),
+    "thinking": StdioServerParameters(
+        command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
+        args=[str(BASE_PATH / "mcps" / "thinking_server.py")]
+    ),
 }
 
 # =====================================
@@ -221,16 +225,22 @@ async def agent_loop(
     tool_map: dict,
     history: list[dict],
 ):
-    system_prompt = f"""Eres un agente autónomo con acceso a herramientas MCP.
+    system_prompt = f"""Eres un agente autonomo con acceso a herramientas MCP.
 
 MEMORIA DE CONVERSACIONES PREVIAS:
 {memory_summary(history)}
 
 INSTRUCCIONES:
-- Usa las herramientas disponibles para responder con información real.
+- Usa las herramientas disponibles para responder con informacion real.
 - Puedes llamar varias herramientas a la vez si lo necesitas.
-- Sé conciso y directo en tus respuestas finales.
-- El proyecto base está en: {BASE_PATH}
+- Se conciso y directo en tus respuestas finales.
+- El proyecto base esta en: {BASE_PATH}
+
+CUANDO USAR thinking__think:
+- Antes de responder preguntas complejas que requieren varios pasos de logica.
+- Cuando necesites analizar un bug, planificar cambios o comparar alternativas.
+- Usa think para razonar paso a paso ANTES de llamar otras tools o responder.
+- No es necesario para preguntas simples o directas.
 """
 
     messages = [

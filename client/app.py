@@ -52,9 +52,9 @@ SERVERS = {
         command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
         args=[str(BASE_PATH / "mcps" / "git_server.py")]
     ),
-    "fetch": StdioServerParameters(
+    "thinking": StdioServerParameters(
         command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
-        args=[str(BASE_PATH / "mcps" / "fetch_server.py")]
+        args=[str(BASE_PATH / "mcps" / "thinking_server.py")]
     ),
 }
 
@@ -182,13 +182,17 @@ async def run_agent_once(user_input: str, max_steps: int = 8) -> dict:
     tools_used   = []
     final_answer = ""
 
-    system_prompt = f"""Eres un agente autónomo con acceso a herramientas MCP.
+    system_prompt = f"""Eres un agente autonomo con acceso a herramientas MCP.
 
 MEMORIA:
 {memory_summary(history)}
 
-Usa las herramientas disponibles. Sé conciso.
+Usa las herramientas disponibles. Se conciso.
 Proyecto base: {BASE_PATH}
+
+CUANDO USAR thinking__think:
+Antes de responder preguntas complejas, usa think para razonar paso a paso.
+No es necesario para preguntas simples.
 """
 
     async def run_loop():
