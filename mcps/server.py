@@ -4,17 +4,24 @@ mcps/server.py
 Servidor MCP propio con tools custom sobre el proyecto ai-lab.
 
 Tools expuestas:
-  - list_project_files   → lista archivos del proyecto
-  - read_project_file    → lee un archivo del proyecto
-  - write_project_file   → escribe/crea un archivo
-  - search_in_files      → busca texto en archivos del proyecto
-  - run_python_file      → ejecuta un script Python del proyecto
-  - get_project_summary  → resumen rápido del proyecto
+  - list_project_files   -> lista archivos del proyecto
+  - read_project_file    -> lee un archivo del proyecto
+  - write_project_file   -> escribe/crea un archivo
+  - search_in_files      -> busca texto en archivos del proyecto
+  - run_python_file      -> ejecuta un script Python del proyecto
+  - get_project_summary  -> resumen rapido del proyecto
+  - semantic_search      -> busqueda semantica RAG sobre el indice ChromaDB
+
+NOTA: sentence_transformers/PyTorch tarda ~20s en cargar.
+El modelo se pre-carga al arrancar el servidor (antes de mcp.run())
+para que las llamadas a semantic_search sean rapidas (~5s).
 """
 
 import os
+import sys
 import subprocess
 import fnmatch
+import anyio
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
@@ -25,6 +32,27 @@ from mcp.server.fastmcp import FastMCP
 BASE_PATH = Path(r"C:\Users\chuwi\ai-lab")
 
 mcp = FastMCP("ai-lab-server")
+
+# =====================================
+# PRE-CARGA DEL MODELO RAG
+# =====================================
+# sentence_transformers + PyTorch tardan ~20s en importar.
+# Se cargan aqui, al arrancar el servidor, para que semantic_search
+# responda en ~5s en lugar de timeout en la primera llamada.
+
+if str(BASE_PATH) not in sys.path:
+    sys.path.insert(0, str(BASE_PATH))
+
+_rag_ready = False
+_rag_search = None
+_rag_format = None
+
+try:
+    from rag.retriever import search as _rag_search, format_context as _rag_format
+    _rag_ready = True
+    print("RAG model loaded OK", file=sys.stderr)
+except Exception as _e:
+    print(f"RAG not available: {_e}", file=sys.stderr)
 
 # =====================================
 # HELPERS
@@ -226,6 +254,51 @@ def get_project_summary() -> str:
     summary.extend(py_files)
 
     return "\n".join(summary)
+
+
+# =====================================
+# RAG — BUSQUEDA SEMANTICA
+# =====================================
+
+def _search_sync(query: str, top_k: int) -> str:
+    """Ejecuta la busqueda semantica usando el modelo pre-cargado."""
+    if not _rag_ready:
+        return (
+            "El modulo RAG no esta disponible. "
+            "Verifica que sentence-transformers esta instalado."
+        )
+    try:
+        results = _rag_search(query, top_k=top_k)
+        if not results:
+            return f"Sin resultados para: {query}"
+        return _rag_format(results)
+    except Exception as e:
+        msg = str(e)
+        if "does not exist" in msg or "Collection" in msg:
+            return (
+                "El indice RAG no existe todavia. "
+                "Ejecuta primero: python rag/indexer.py"
+            )
+        return f"ERROR en busqueda semantica: {e}"
+
+
+@mcp.tool()
+async def semantic_search(query: str, top_k: int = 5) -> str:
+    """
+    Busca informacion relevante en el proyecto usando busqueda semantica (RAG).
+    Encuentra fragmentos de codigo y documentacion por significado, no solo
+    por palabras exactas. Util para preguntas conceptuales sobre el proyecto.
+
+    Parametros:
+      query: pregunta o descripcion de lo que buscas
+      top_k: numero de fragmentos a devolver (por defecto 5)
+
+    Requiere haber ejecutado 'python rag/indexer.py' previamente.
+    """
+    return await anyio.to_thread.run_sync(
+        lambda: _search_sync(query, top_k),
+        abandon_on_cancel=True
+    )
 
 
 # =====================================
