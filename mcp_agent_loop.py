@@ -19,6 +19,27 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # =====================================
+# MODELO LLM (LM Studio)
+# =====================================
+import os
+MODEL_NAME = os.environ.get("AI_LAB_MODEL", "qwen2.5-3b-instruct")
+
+# =====================================
+# CONSOLA WINDOWS: evitar UnicodeEncodeError (cp1252)
+# =====================================
+def _configure_utf8_stdio():
+    try:
+        import sys
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+_configure_utf8_stdio()
+
+# =====================================
 # CONFIG
 # =====================================
 
@@ -31,7 +52,8 @@ MEMORY_FILE = BASE_PATH / "data" / "memory.json"
 
 llm = OpenAI(
     base_url="http://localhost:1234/v1",
-    api_key="lm-studio"
+    api_key="lm-studio",
+    timeout=300.0
 )
 
 # =====================================
@@ -104,21 +126,33 @@ def memory_summary(history: list[dict]) -> str:
 # =====================================
 
 def safe_llm_call(messages: list[dict], tools: list[dict], retries: int = 3):
+    def _call(_messages: list[dict], _tools: list[dict] | None):
+        return llm.chat.completions.create(
+            model=MODEL_NAME,
+            messages=_messages,
+            tools=_tools if _tools else None,
+            tool_choice="auto" if _tools else None,
+            temperature=0.1,
+            max_tokens=700,
+            parallel_tool_calls=True
+        )
+
     for i in range(retries):
         try:
-            return llm.chat.completions.create(
-                model="qwen2.5-7b-instruct-1m",
-                messages=messages,
-                tools=tools if tools else None,
-                tool_choice="auto" if tools else None,
-                temperature=0.1,
-                parallel_tool_calls=True
-            )
+            return _call(messages, tools)
         except Exception as e:
             msg = str(e)
-            print(f"\n⚠️  LLM error (intento {i+1}): {msg}")
+            print(f"\n[WARN] LLM error (intento {i+1}): {msg}")
+            # LM Studio / llama.cpp a veces falla si el prompt+tools exceden n_ctx
+            if "n_keep" in msg and "n_ctx" in msg:
+                print("[INFO] Contexto demasiado largo -> reintentando sin tools y con menos historial...")
+                reduced = [messages[0]] + messages[-2:] if len(messages) >= 3 else messages
+                try:
+                    return _call(reduced, None)
+                except Exception as e2:
+                    print(f"[WARN] Reintento reducido falló: {e2}")
             if "Model reloaded" in msg:
-                print("⏳ Modelo recargado → esperando 3s...")
+                print("[INFO] Modelo recargado -> esperando 3s...")
                 time.sleep(3)
             else:
                 time.sleep(1)
@@ -199,18 +233,19 @@ async def open_servers_and_run(
     try:
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools_resp = await session.list_tools()
+                print(f"[INFO] Abriendo servidor '{server_name}'...", flush=True)
+                await asyncio.wait_for(session.initialize(), timeout=20)
+                tools_resp = await asyncio.wait_for(session.list_tools(), timeout=20)
                 for t in tools_resp.tools:
                     ot = mcp_tool_to_openai(t, server_name)
                     all_tools.append(ot)
                     tool_map[ot["function"]["name"]] = (t.name, session)
-                print(f"✅ Servidor '{server_name}': {len(tools_resp.tools)} tools")
+                print(f"[OK] Servidor '{server_name}': {len(tools_resp.tools)} tools", flush=True)
 
                 await open_servers_and_run(rest, all_tools, tool_map, callback)
 
     except Exception as e:
-        print(f"⚠️  Servidor '{server_name}' no disponible: {e}")
+        print(f"[WARN] Servidor '{server_name}' no disponible: {e}", flush=True)
         # Continuar con el resto aunque este falle
         await open_servers_and_run(rest, all_tools, tool_map, callback)
 
@@ -250,10 +285,15 @@ CUANDO USAR thinking__think:
     ]
 
     for step in range(10):
-        print(f"\n{'='*50}")
-        print(f"🧠 PASO {step + 1}")
+        print(f"\n{'='*50}", flush=True)
+        print(f"PASO {step + 1}", flush=True)
 
-        response = safe_llm_call(messages, all_tools)
+        # Heurística: preguntas explicativas suelen no necesitar tools; además reduce tokens.
+        tools_for_step = all_tools
+        if user_input.strip().lower().startswith(("explica", "explícame", "explicame")):
+            tools_for_step = []
+
+        response = safe_llm_call(messages, tools_for_step)
         msg = response.choices[0].message
 
         # =====================================
@@ -261,7 +301,7 @@ CUANDO USAR thinking__think:
         # =====================================
 
         if msg.tool_calls:
-            print(f"\n🔧 Tool calls en este paso: {len(msg.tool_calls)}")
+            print(f"\nTool calls en este paso: {len(msg.tool_calls)}", flush=True)
 
             messages.append({
                 "role": "assistant",
@@ -286,7 +326,7 @@ CUANDO USAR thinking__think:
                 except Exception:
                     args = {}
 
-                print(f"   ▶ {openai_name}({args})")
+                print(f"   -> {openai_name}({args})")
 
                 if openai_name not in tool_map:
                     return tc.id, f"ERROR: tool '{openai_name}' no encontrada."
@@ -296,7 +336,7 @@ CUANDO USAR thinking__think:
                 try:
                     result = await session.call_tool(mcp_name, args)
                     text = result.content[0].text if result.content else "(sin resultado)"
-                    print(f"   ✅ resultado: {text[:100]}...")
+                    print(f"   [OK] resultado: {text[:100]}...")
                     return tc.id, text
                 except Exception as e:
                     return tc.id, f"ERROR ejecutando tool: {e}"
@@ -316,15 +356,15 @@ CUANDO USAR thinking__think:
 
         else:
             final_answer = msg.content or ""
-            print(f"\n✅ RESPUESTA FINAL:\n")
-            print(final_answer)
+            print(f"\nRESPUESTA FINAL:\n", flush=True)
+            print(final_answer, flush=True)
 
             messages.append({"role": "assistant", "content": final_answer})
             save_memory(messages)
-            print(f"\n💾 Memoria guardada en: {MEMORY_FILE}")
+            print(f"\nMemoria guardada en: {MEMORY_FILE}", flush=True)
             return
 
-    print("\n⚠️  El agente alcanzó el límite de pasos (10).")
+    print("\n[WARN] El agente alcanzó el límite de pasos (10).")
 
 
 # =====================================
@@ -339,9 +379,9 @@ async def run_agent(user_input: str):
     server_list = list(SERVERS.items())
 
     async def run():
-        print(f"\n🔧 Total tools disponibles: {len(all_tools)}")
+        print(f"\nTotal tools disponibles: {len(all_tools)}", flush=True)
         for t in all_tools:
-            print(f"   - {t['function']['name']}")
+            print(f"   - {t['function']['name']}", flush=True)
         await agent_loop(user_input, all_tools, tool_map, history)
 
     await open_servers_and_run(server_list, all_tools, tool_map, run)
@@ -353,5 +393,5 @@ if __name__ == "__main__":
     user_input = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else \
         "Explora el proyecto y dime qué archivos Python existen y qué hace cada uno."
 
-    print(f"\n👤 Usuario: {user_input}\n")
+    print(f"\nUsuario: {user_input}\n")
     asyncio.run(run_agent(user_input))
