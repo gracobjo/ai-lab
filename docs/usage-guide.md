@@ -1,6 +1,21 @@
 # Guía de uso del agente ai-lab
 
-## Cómo lanzarlo
+## Interfaz web (chat en el navegador)
+
+1. Inicia **LM Studio** (servidor local en el puerto **1234**).
+2. En la raíz del proyecto:
+
+   ```powershell
+   .\run_web.ps1
+   ```
+
+3. Abre **http://localhost:8000** y escribe tu pregunta.
+
+Guía detallada (requisitos, API, errores): **[docs/web-server.md](web-server.md)**.
+
+---
+
+## Cómo lanzarlo (terminal / CLI)
 
 ```bash
 # Activar el entorno virtual primero
@@ -164,7 +179,7 @@ del data\memory.json
 
 ## Via API REST
 
-Si tienes la API corriendo (`uvicorn client.app:app --port 8000`):
+Si tienes el servidor web activo (`.\run_web.ps1` o `uvicorn client.app:app --port 8000`):
 
 ```bash
 # Pregunta al agente

@@ -340,7 +340,8 @@ Response:
 ### Arrancar la API
 
 ```bash
-uvicorn client.app:app --reload --port 8000
+.\run_web.ps1
+# o: uvicorn client.app:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Documentación interactiva en `http://localhost:8000/docs`.

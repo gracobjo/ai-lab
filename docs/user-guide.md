@@ -216,13 +216,26 @@ listar directorios, leer/escribir/mover archivos, buscar por nombre
 
 ---
 
-## 6. Uso de la API REST
+## 6. Servidor web y API REST
 
-```bash
-uvicorn client.app:app --reload --port 8000
+### Interfaz de chat
+
+```powershell
+# Requisito: LM Studio con servidor local en el puerto 1234
+.\run_web.ps1
 ```
 
-Documentación interactiva: `http://localhost:8000/docs`
+Abre **http://localhost:8000** para usar el chat en el navegador.
+
+Documentación completa de arranque y solución de problemas: `docs/web-server.md`.
+
+### Arranque manual (API + misma interfaz)
+
+```bash
+uvicorn client.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+Documentación interactiva de la API: `http://localhost:8000/docs`
 
 ### Endpoints
 
