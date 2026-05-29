@@ -77,13 +77,15 @@ Recarga forzada tras regenerar: **Ctrl+F5** en el navegador.
 
 ### Colores por tipo
 
-| Color | Tipo de trámite |
-|-------|-----------------|
-| Verde | Inicio (Registro de solicitud) |
-| Cyan | Notificación |
-| Ámbar | Propuesta / resolución |
-| Rojo | Fin / publicación BOCYL o BDNS |
-| Violeta | Proceso intermedio |
+Nodos con **fondo claro y texto oscuro** (alto contraste sobre el canvas oscuro):
+
+| Fondo | Texto | Tipo |
+|-------|-------|------|
+| Verde claro | Verde oscuro | Inicio (Registro) |
+| Cyan claro | Azul oscuro | Notificación |
+| Ámbar claro | Marrón oscuro | Propuesta / resolución |
+| Rojo claro | Rojo oscuro | Fin / publicación |
+| Violeta claro | Violeta oscuro | Proceso intermedio |
 
 ### Formas
 

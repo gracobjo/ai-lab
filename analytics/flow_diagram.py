@@ -24,33 +24,67 @@ TRAMITES_COLUMNS = {
     "to_label": "descripcion_tramite_siguiente",
 }
 
-# Colores por tipo de trámite (vis-network)
+# Colores por tipo de trámite (vis-network) — fondo claro + texto oscuro (alto contraste)
 SHAPE_STYLES: dict[str, dict] = {
     "start": {
-        "color": {"background": "#22c55e", "border": "#15803d", "highlight": {"background": "#4ade80", "border": "#166534"}},
+        "color": {
+            "background": "#bbf7d0",
+            "border": "#15803d",
+            "highlight": {"background": "#86efac", "border": "#166534"},
+        },
+        "font": {"color": "#14532d", "size": 13, "face": "Segoe UI", "bold": True},
         "shape": "ellipse",
         "label": "Inicio",
     },
     "end": {
-        "color": {"background": "#ef4444", "border": "#b91c1c", "highlight": {"background": "#f87171", "border": "#991b1b"}},
+        "color": {
+            "background": "#fecaca",
+            "border": "#b91c1c",
+            "highlight": {"background": "#fca5a5", "border": "#991b1b"},
+        },
+        "font": {"color": "#7f1d1d", "size": 13, "face": "Segoe UI", "bold": True},
         "shape": "ellipse",
         "label": "Fin / publicación",
     },
     "decision": {
-        "color": {"background": "#f59e0b", "border": "#b45309", "highlight": {"background": "#fbbf24", "border": "#92400e"}},
+        "color": {
+            "background": "#fde68a",
+            "border": "#b45309",
+            "highlight": {"background": "#fcd34d", "border": "#92400e"},
+        },
+        "font": {"color": "#78350f", "size": 12, "face": "Segoe UI", "bold": True},
         "shape": "diamond",
         "label": "Propuesta / resolución",
     },
     "document": {
-        "color": {"background": "#06b6d4", "border": "#0e7490", "highlight": {"background": "#22d3ee", "border": "#155e75"}},
+        "color": {
+            "background": "#bae6fd",
+            "border": "#0369a1",
+            "highlight": {"background": "#7dd3fc", "border": "#075985"},
+        },
+        "font": {"color": "#0c4a6e", "size": 12, "face": "Segoe UI", "bold": True},
         "shape": "box",
         "label": "Notificación",
     },
     "process": {
-        "color": {"background": "#8b5cf6", "border": "#6d28d9", "highlight": {"background": "#a78bfa", "border": "#5b21b6"}},
+        "color": {
+            "background": "#ddd6fe",
+            "border": "#6d28d9",
+            "highlight": {"background": "#c4b5fd", "border": "#5b21b6"},
+        },
+        "font": {"color": "#4c1d95", "size": 12, "face": "Segoe UI", "bold": True},
         "shape": "box",
         "label": "Proceso",
     },
+}
+
+DEFAULT_NODE_FONT = {
+    "color": "#1e293b",
+    "size": 12,
+    "face": "Segoe UI",
+    "bold": True,
+    "strokeWidth": 3,
+    "strokeColor": "#f8fafc",
 }
 
 
@@ -300,7 +334,7 @@ def graph_to_vis_payload(graph: FlowGraph) -> dict:
             "group": node.shape,
             "shape": style["shape"],
             "color": style["color"],
-            "font": {"color": "#ffffff", "size": 13, "face": "Segoe UI"},
+            "font": {**DEFAULT_NODE_FONT, **style.get("font", {})},
             "borderWidth": 2,
             "raw_id": node.raw_id,
             "full_label": node.label,
@@ -313,8 +347,16 @@ def graph_to_vis_payload(graph: FlowGraph) -> dict:
             "to": edge.target,
             "label": edge.label,
             "title": f"Rama {edge.label}" if edge.label else "",
-            "font": {"color": "#cbd5e1", "size": 11, "strokeWidth": 0},
-            "color": {"color": "#64748b", "highlight": "#93c5fd", "opacity": 0.85},
+            "font": {
+                "color": "#1e293b",
+                "size": 12,
+                "face": "Segoe UI",
+                "bold": True,
+                "strokeWidth": 4,
+                "strokeColor": "#f1f5f9",
+                "background": "#e2e8f0",
+            },
+            "color": {"color": "#64748b", "highlight": "#2563eb", "opacity": 0.9},
             "arrows": "to",
             "smooth": {"type": "cubicBezier", "forceDirection": "vertical", "roundness": 0.35},
         })
@@ -391,7 +433,8 @@ def _write_flow_html(
       background: #1c2230; border: 1px solid #2a3142; font-size: 0.78rem; cursor: pointer;
     }}
     .tramite-list li:hover {{ border-color: #3b82f6; }}
-    .tramite-list li .tid {{ color: #93c5fd; font-weight: 600; }}
+    .tramite-list li .tid {{ color: #38bdf8; font-weight: 600; }}
+    .tramite-list li .tlabel {{ color: #e2e8f0; line-height: 1.35; }}
     .tramite-list li.focused {{ border-color: #22c55e; background: #14532d33; }}
     .empty {{ color: #64748b; font-size: 0.8rem; font-style: italic; }}
   </style>
@@ -436,8 +479,8 @@ def _write_flow_html(
     const container = document.getElementById("network");
 
     const options = {{
-      nodes: {{ shadow: true, margin: 10 }},
-      edges: {{ width: 1.5 }},
+      nodes: {{ shadow: {{ enabled: true, size: 6, x: 2, y: 2 }} }},
+      edges: {{ width: 1.5, font: {{ align: "middle" }} }},
       interaction: {{
         dragNodes: true,
         dragView: true,
@@ -482,7 +525,7 @@ def _write_flow_html(
       }}
       items.forEach(item => {{
         const li = document.createElement("li");
-        li.innerHTML = `<span class="tid">${{item.raw_id || item.id}}</span><br>${{item.full_label || item.label}}`;
+        li.innerHTML = `<span class="tid">${{item.raw_id || item.id}}</span><br><span class="tlabel">${{item.full_label || item.label}}</span>`;
         li.addEventListener("click", () => focusNode(item.id));
         el.appendChild(li);
       }});
@@ -504,14 +547,14 @@ def _write_flow_html(
     function applyFocusVisuals(activeSet) {{
       const nodeUpdates = GRAPH.nodes.map(n => {{
         const on = !focusedId || activeSet.has(n.id);
-        return {{ id: n.id, opacity: on ? 1 : 0.15, font: {{ color: on ? "#ffffff" : "#475569" }} }};
+        return {{ id: n.id, opacity: on ? 1 : 0.2 }};
       }});
       nodes.update(nodeUpdates);
       const edgeUpdates = GRAPH.edges.map(e => {{
         const on = !focusedId || (activeSet.has(e.from) && activeSet.has(e.to));
         return {{
           id: e.id,
-          color: {{ color: on ? "#94a3b8" : "#334155", opacity: on ? 1 : 0.06 }},
+          color: {{ color: on ? "#475569" : "#334155", opacity: on ? 1 : 0.15 }},
           width: on ? 2.5 : 0.5,
         }};
       }});
