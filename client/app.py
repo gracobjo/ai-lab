@@ -22,6 +22,7 @@ from agent_core import (
     MODEL_NAME,
     _env_truthy,
     clear_memory,
+    get_mcp_prompt_catalog,
     list_mcp_tools,
     load_memory,
     powerbi_enabled,
@@ -53,6 +54,16 @@ class ToolInfo(BaseModel):
     name: str
     description: str
     server: str
+
+
+class PromptServer(BaseModel):
+    id: str
+    label: str
+    description: str
+    color: str
+    prompts: list[str]
+    disabled: bool = False
+    disabled_hint: str | None = None
 
 
 # =====================================
@@ -156,21 +167,56 @@ WEB_UI = """<!DOCTYPE html>
 
     /* WELCOME */
     .welcome {
-      text-align: center; padding: 32px 16px 24px;
+      text-align: center; padding: 24px 16px 16px;
       animation: fadeIn .4s ease;
     }
     .welcome h2 { font-size: 1.35rem; font-weight: 600; margin-bottom: 8px; }
-    .welcome p { color: var(--muted); font-size: 0.9rem; line-height: 1.5; max-width: 420px; margin: 0 auto 20px; }
-    .suggestions {
-      display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+    .welcome > p {
+      color: var(--muted); font-size: 0.9rem; line-height: 1.5;
+      max-width: 480px; margin: 0 auto 20px;
     }
-    .suggestion {
+    .mcp-prompts {
+      max-width: 720px; margin: 0 auto; text-align: left;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .mcp-group {
       background: var(--surface); border: 1px solid var(--border);
-      color: var(--text); padding: 10px 14px; border-radius: 12px;
-      font-size: 0.82rem; cursor: pointer; text-align: left; max-width: 280px;
-      transition: border-color .15s, background .15s, transform .1s;
+      border-radius: 14px; padding: 14px 16px;
+      transition: border-color .15s;
     }
-    .suggestion:hover { border-color: var(--accent); background: var(--surface-2); transform: translateY(-1px); }
+    .mcp-group:hover { border-color: #3a4256; }
+    .mcp-group.disabled { opacity: .72; }
+    .mcp-group-head {
+      display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px;
+    }
+    .mcp-icon {
+      width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+      display: grid; place-items: center; font-size: 0.72rem; font-weight: 700;
+      color: #fff; letter-spacing: -.02em;
+    }
+    .mcp-label { font-size: 0.88rem; font-weight: 600; }
+    .mcp-desc { font-size: 0.76rem; color: var(--muted); margin-top: 2px; line-height: 1.35; }
+    .mcp-disabled-hint {
+      font-size: 0.72rem; color: #fbbf24; margin-top: 6px; line-height: 1.4;
+    }
+    .prompt-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    .prompt-chip {
+      background: var(--surface-2); border: 1px solid var(--border);
+      color: var(--text); padding: 7px 12px; border-radius: 999px;
+      font-size: 0.78rem; cursor: pointer; text-align: left; line-height: 1.35;
+      transition: border-color .15s, background .15s, transform .1s, box-shadow .15s;
+    }
+    .prompt-chip:hover:not(:disabled) {
+      border-color: var(--accent); background: rgba(59,130,246,.08);
+      transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    }
+    .prompt-chip:active:not(:disabled) { transform: translateY(0); }
+    .prompt-chip:disabled { opacity: .45; cursor: not-allowed; }
+    .welcome-hint {
+      text-align: center; font-size: 0.72rem; color: #5c6378;
+      margin-top: 14px;
+    }
+    .suggestions { display: none; }
 
     /* MESSAGES */
     .row {
@@ -313,7 +359,7 @@ WEB_UI = """<!DOCTYPE html>
     }
     #overlay.open { opacity: 1; pointer-events: auto; }
     #sidebar {
-      position: fixed; top: 0; right: 0; bottom: 0; width: min(320px, 92vw);
+      position: fixed; top: 0; right: 0; bottom: 0; width: min(360px, 92vw);
       background: var(--surface); border-left: 1px solid var(--border);
       z-index: 30; transform: translateX(100%); transition: transform .25s ease;
       display: flex; flex-direction: column;
@@ -332,7 +378,17 @@ WEB_UI = """<!DOCTYPE html>
     #tools-search:focus { border-color: var(--accent); }
     #tools-list { flex: 1; overflow-y: auto; padding: 12px 16px 24px; }
     .tool-server { font-size: 0.68rem; text-transform: uppercase; letter-spacing: .06em;
-      color: var(--muted); margin: 14px 0 6px; }
+      color: var(--muted); margin: 16px 0 6px; display: flex; align-items: center; gap: 8px; }
+    .tool-server-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .sidebar-prompts { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+    .sidebar-prompt {
+      background: rgba(59,130,246,.08); border: 1px solid var(--border);
+      color: var(--text); padding: 5px 10px; border-radius: 999px;
+      font-size: 0.72rem; cursor: pointer; line-height: 1.3; text-align: left;
+      transition: border-color .15s, background .15s;
+    }
+    .sidebar-prompt:hover:not(:disabled) { border-color: var(--accent); background: rgba(59,130,246,.15); }
+    .sidebar-prompt:disabled { opacity: .4; cursor: not-allowed; }
     .tool-item {
       padding: 10px 12px; border-radius: 8px; margin-bottom: 4px;
       background: var(--surface-2); border: 1px solid transparent;
@@ -381,6 +437,7 @@ WEB_UI = """<!DOCTYPE html>
       <span id="status-text">conectando</span>
     </div>
     <button type="button" class="btn-ghost" id="tools-btn" aria-label="Ver herramientas MCP">Tools</button>
+    <button type="button" class="btn-ghost" id="examples-btn" aria-label="Ver ejemplos por MCP">Ejemplos</button>
     <button type="button" class="btn-ghost danger" id="clear-btn" aria-label="Borrar historial">Limpiar</button>
   </div>
 </header>
@@ -407,7 +464,7 @@ WEB_UI = """<!DOCTYPE html>
 <div id="overlay" aria-hidden="true"></div>
 <aside id="sidebar" aria-label="Panel de herramientas">
   <div class="sidebar-head">
-    <h2>Herramientas MCP</h2>
+    <h2 id="sidebar-title">Herramientas MCP</h2>
     <button type="button" class="btn-ghost" id="sidebar-close" aria-label="Cerrar">✕</button>
   </div>
   <input type="search" id="tools-search" placeholder="Buscar tool…" autocomplete="off">
@@ -435,13 +492,13 @@ WEB_UI = """<!DOCTYPE html>
   let stickToBottom = true;
   let typingTimer = null;
   let allToolsCache = [];
+  let promptsCatalog = [];
+  let sidebarMode = 'tools';
 
-  const SUGGESTIONS = [
-    "¿Qué archivos Python hay y qué hace cada uno?",
-    "Resume el estado del repositorio git",
-    "Busca en el código dónde se define el agente MCP",
-    "Explícame el flujo desde la pregunta hasta la respuesta",
-  ];
+  const SERVER_ABBR = {
+    filesystem: 'FS', custom: 'AI', git: 'Git', fetch: 'Web',
+    thinking: 'Think', powerbi: 'PBI',
+  };
 
   function escapeHtml(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -487,6 +544,60 @@ WEB_UI = """<!DOCTYPE html>
     if (w) w.remove();
   }
 
+  function usePrompt(text, { send = true, closeSidebar = false } = {}) {
+    if (!text || isBusy) return;
+    if (closeSidebar) openSidebar(false);
+    if (send) {
+      input.value = text;
+      sendMessage();
+      return;
+    }
+    input.value = text;
+    resizeInput();
+    input.focus();
+    showToast('Frase cargada — Enter para enviar');
+  }
+
+  function makePromptChip(text, { disabled = false, compact = false } = {}) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = compact ? 'sidebar-prompt' : 'prompt-chip';
+    btn.textContent = text;
+    btn.disabled = disabled || isBusy;
+    if (!disabled) {
+      btn.addEventListener('click', () => usePrompt(text, { send: true, closeSidebar: compact }));
+    }
+    return btn;
+  }
+
+  function renderWelcomePrompts(servers) {
+    const box = document.getElementById('mcp-prompts');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!servers.length) {
+      box.innerHTML = '<p style="color:var(--muted);font-size:.85rem;text-align:center">No hay servidores MCP activos</p>';
+      return;
+    }
+    servers.forEach(s => {
+      const group = document.createElement('div');
+      group.className = 'mcp-group' + (s.disabled ? ' disabled' : '');
+      const abbr = SERVER_ABBR[s.id] || s.label.slice(0, 2).toUpperCase();
+      group.innerHTML = `
+        <div class="mcp-group-head">
+          <div class="mcp-icon" style="background:${escapeHtml(s.color)}">${escapeHtml(abbr)}</div>
+          <div>
+            <div class="mcp-label">${escapeHtml(s.label)}</div>
+            <div class="mcp-desc">${escapeHtml(s.description)}</div>
+            ${s.disabled && s.disabled_hint ? `<div class="mcp-disabled-hint">${escapeHtml(s.disabled_hint)}</div>` : ''}
+          </div>
+        </div>
+        <div class="prompt-row"></div>`;
+      const row = group.querySelector('.prompt-row');
+      s.prompts.forEach(p => row.appendChild(makePromptChip(p, { disabled: s.disabled })));
+      box.appendChild(group);
+    });
+  }
+
   function showWelcome() {
     if (document.getElementById('welcome')) return;
     const el = document.createElement('div');
@@ -494,18 +605,11 @@ WEB_UI = """<!DOCTYPE html>
     el.className = 'welcome';
     el.innerHTML = `
       <h2>¿En qué te ayudo?</h2>
-      <p>Pregunta sobre tu proyecto ai-lab. El agente puede leer archivos, consultar git, buscar en el código y razonar paso a paso.</p>
-      <div class="suggestions"></div>`;
-    const box = el.querySelector('.suggestions');
-    SUGGESTIONS.forEach(text => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'suggestion';
-      b.textContent = text;
-      b.addEventListener('click', () => { input.value = text; input.focus(); resizeInput(); });
-      box.appendChild(b);
-    });
+      <p>Elige una frase según el servidor MCP. Cada una usa las tools reales del proyecto.</p>
+      <div class="mcp-prompts" id="mcp-prompts"></div>
+      <p class="welcome-hint">Clic en una frase para enviar · Tools para ver todas las herramientas</p>`;
     chat.appendChild(el);
+    renderWelcomePrompts(promptsCatalog);
   }
 
   function addSystemBanner(text) {
@@ -629,6 +733,7 @@ WEB_UI = """<!DOCTYPE html>
     isBusy = busy;
     input.disabled = busy;
     sendBtn.disabled = busy || dot.classList.contains('err');
+    if (document.getElementById('mcp-prompts')) renderWelcomePrompts(promptsCatalog);
   }
 
   function setStatus(ok, model) {
@@ -643,10 +748,51 @@ WEB_UI = """<!DOCTYPE html>
     input.style.height = Math.min(input.scrollHeight, 140) + 'px';
   }
 
-  function openSidebar(open) {
+  function openSidebar(open, mode = sidebarMode) {
+    sidebarMode = mode;
     sidebar.classList.toggle('open', open);
     overlay.classList.toggle('open', open);
-    if (open) loadTools();
+    const title = document.getElementById('sidebar-title');
+    const search = document.getElementById('tools-search');
+    if (title) title.textContent = mode === 'examples' ? 'Ejemplos por MCP' : 'Herramientas MCP';
+    if (search) {
+      search.style.display = '';
+      search.placeholder = mode === 'examples' ? 'Buscar ejemplo…' : 'Buscar tool…';
+      if (open) search.value = '';
+    }
+    if (open) {
+      if (mode === 'examples') renderExamplesPanel();
+      else loadTools();
+    }
+  }
+
+  function renderExamplesPanel(filter = '') {
+    const q = filter.trim().toLowerCase();
+    toolsList.innerHTML = '';
+    const servers = q
+      ? promptsCatalog.filter(s =>
+          (s.label + s.description + s.prompts.join(' ')).toLowerCase().includes(q))
+      : promptsCatalog;
+    if (!servers.length) {
+      toolsList.innerHTML = '<p style="color:var(--muted);font-size:.85rem">Sin resultados</p>';
+      return;
+    }
+    servers.forEach(s => {
+      const h = document.createElement('div');
+      h.className = 'tool-server';
+      h.innerHTML = `<span class="tool-server-dot" style="background:${escapeHtml(s.color)}"></span>${escapeHtml(s.label)}`;
+      toolsList.appendChild(h);
+      if (s.disabled && s.disabled_hint) {
+        const hint = document.createElement('p');
+        hint.style.cssText = 'font-size:.72rem;color:#fbbf24;margin:0 0 8px;line-height:1.4';
+        hint.textContent = s.disabled_hint;
+        toolsList.appendChild(hint);
+      }
+      const row = document.createElement('div');
+      row.className = 'sidebar-prompts';
+      s.prompts.forEach(p => row.appendChild(makePromptChip(p, { disabled: s.disabled, compact: true })));
+      toolsList.appendChild(row);
+    });
   }
 
   async function checkHealth() {
@@ -656,11 +802,7 @@ WEB_UI = """<!DOCTYPE html>
         const d = await r.json();
         setStatus(true, d.model);
         let banner = `Conectado · ${d.model}`;
-        if (d.powerbi_mcp) {
-          banner += ' · Power BI MCP activo';
-        } else {
-          addError('Power BI MCP no activo. Cierra el servidor y ejecuta .\\\\run_web_powerbi.ps1 (no run_web.ps1).');
-        }
+        if (d.powerbi_mcp) banner += ' · Power BI MCP activo';
         addSystemBanner(banner);
       } else setStatus(false);
     } catch {
@@ -728,12 +870,23 @@ WEB_UI = """<!DOCTYPE html>
       if (!byServer[t.server]) byServer[t.server] = [];
       byServer[t.server].push(t);
     });
+    const serverMeta = {};
+    promptsCatalog.forEach(s => { serverMeta[s.id] = s; });
     toolsList.innerHTML = '';
     Object.entries(byServer).forEach(([server, items]) => {
+      const meta = serverMeta[server] || {};
       const h = document.createElement('div');
       h.className = 'tool-server';
-      h.textContent = server;
+      const dotColor = meta.color || 'var(--muted)';
+      h.innerHTML = `<span class="tool-server-dot" style="background:${escapeHtml(dotColor)}"></span>${escapeHtml(meta.label || server)}`;
       toolsList.appendChild(h);
+      if (meta.prompts?.length) {
+        const row = document.createElement('div');
+        row.className = 'sidebar-prompts';
+        meta.prompts.slice(0, 2).forEach(p =>
+          row.appendChild(makePromptChip(p, { disabled: meta.disabled, compact: true })));
+        toolsList.appendChild(row);
+      }
       items.forEach(t => {
         const item = document.createElement('div');
         item.className = 'tool-item';
@@ -742,6 +895,18 @@ WEB_UI = """<!DOCTYPE html>
         toolsList.appendChild(item);
       });
     });
+  }
+
+  async function loadPrompts() {
+    try {
+      const r = await fetch('/prompts');
+      const d = await r.json();
+      promptsCatalog = d.servers || [];
+      const w = document.getElementById('mcp-prompts');
+      if (w) renderWelcomePrompts(promptsCatalog);
+    } catch {
+      promptsCatalog = [];
+    }
   }
 
   async function loadTools() {
@@ -756,9 +921,13 @@ WEB_UI = """<!DOCTYPE html>
     }
   }
 
-  toolsSearch.addEventListener('input', () => renderToolsList(allToolsCache, toolsSearch.value));
+  toolsSearch.addEventListener('input', () => {
+    if (sidebarMode === 'examples') renderExamplesPanel(toolsSearch.value);
+    else renderToolsList(allToolsCache, toolsSearch.value);
+  });
 
-  document.getElementById('tools-btn').addEventListener('click', () => openSidebar(true));
+  document.getElementById('tools-btn').addEventListener('click', () => openSidebar(true, 'tools'));
+  document.getElementById('examples-btn').addEventListener('click', () => openSidebar(true, 'examples'));
   document.getElementById('sidebar-close').addEventListener('click', () => openSidebar(false));
   overlay.addEventListener('click', () => openSidebar(false));
 
@@ -766,6 +935,7 @@ WEB_UI = """<!DOCTYPE html>
     if (!confirm('¿Borrar todo el historial de conversación?')) return;
     await fetch('/memory', { method: 'DELETE' });
     chat.innerHTML = '';
+    await loadPrompts();
     showWelcome();
     showToast('Historial borrado');
   });
@@ -781,6 +951,7 @@ WEB_UI = """<!DOCTYPE html>
 
   (async () => {
     await checkHealth();
+    await loadPrompts();
     await loadHistory();
     input.focus();
   })();
@@ -861,4 +1032,13 @@ async def list_tools():
     return {
         "tools": [ToolInfo(**t) for t in tools],
         "count": len(tools),
+    }
+
+
+@app.get("/prompts")
+async def list_prompts():
+    servers = get_mcp_prompt_catalog()
+    return {
+        "servers": [PromptServer(**s) for s in servers],
+        "count": len(servers),
     }

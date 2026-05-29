@@ -267,8 +267,8 @@ def _only_powerbi_tools(all_tools: list[dict]) -> list[dict]:
 def _extract_powerbi_catalog(user_input: str) -> str | None:
     patterns = [
         r'initialCatalog\s*["\']([^"\']+)["\']',
-        r"Conéctate a\s+['\"]([^'\"]+)['\"]",
-        r"Connect to\s+['\"]([^'\"]+)['\"]",
+        r"Con[eé]ctate a\s+['\"]?([\w-]+)['\"]?",
+        r"Connect to\s+['\"]?([\w-]+)['\"]?",
     ]
     for pattern in patterns:
         match = re.search(pattern, user_input, re.I)
@@ -308,12 +308,11 @@ def _should_run_powerbi_list_columns(user_input: str) -> bool:
 
 def _should_run_powerbi_list_tables(user_input: str) -> bool:
     text = user_input.lower()
-    wants_list = any(
+    wants_list = bool(re.search(r"list(?:ar|a)(?:\s+\w+){0,4}\s+tablas\b", text))
+    wants_list = wants_list or any(
         token in text
         for token in (
             "lista de tablas",
-            "listar tablas",
-            "lista las tablas",
             "table_operations",
             "listlocalinstances",
         )
@@ -714,3 +713,97 @@ async def list_mcp_tools() -> list[dict]:
         await collect(server_name, params)
 
     return tools_info
+
+
+def get_mcp_prompt_catalog() -> list[dict]:
+    """Frases de ejemplo por servidor MCP (UI del chat)."""
+    catalog: list[dict] = [
+        {
+            "id": "filesystem",
+            "label": "Archivos",
+            "description": "Explorar y leer archivos del proyecto",
+            "color": "#3b82f6",
+            "prompts": [
+                "Lista los archivos Python en la raíz del proyecto",
+                "Lee el contenido de README.md",
+                "¿Qué hay en la carpeta docs/?",
+            ],
+        },
+        {
+            "id": "custom",
+            "label": "Proyecto ai-lab",
+            "description": "Código, búsqueda en archivos y RAG",
+            "color": "#8b5cf6",
+            "prompts": [
+                "Resume el proyecto con get_project_summary",
+                "Busca en el código dónde se define run_agent_query",
+                "¿Qué archivos Python hay y qué hace cada uno?",
+            ],
+        },
+        {
+            "id": "git",
+            "label": "Git",
+            "description": "Estado, historial y cambios del repositorio",
+            "color": "#f97316",
+            "prompts": [
+                "Resume el estado del repositorio git",
+                "Muestra los últimos 5 commits",
+                "¿Qué archivos cambiaron respecto al último commit?",
+            ],
+        },
+        {
+            "id": "fetch",
+            "label": "Web",
+            "description": "Consultar URLs y APIs externas",
+            "color": "#06b6d4",
+            "prompts": [
+                "Obtén el contenido de https://docs.python.org/3/",
+                "Haz fetch de los headers de https://github.com",
+            ],
+        },
+        {
+            "id": "thinking",
+            "label": "Razonamiento",
+            "description": "Planificar antes de actuar",
+            "color": "#eab308",
+            "prompts": [
+                "Explícame el flujo desde la pregunta del usuario hasta la respuesta del agente",
+                "Piensa paso a paso cómo añadir una nueva tool MCP al proyecto",
+            ],
+        },
+        {
+            "id": "powerbi",
+            "label": "Power BI",
+            "description": "Modelo semántico en Desktop (tablas, columnas, DAX)",
+            "color": "#f2c811",
+            "requires": "powerbi",
+            "prompts": [
+                "Lista las tablas del modelo abierto en Power BI",
+                "Lista las columnas de la tabla california_housing",
+                "Conéctate a mi-modelo y lista todas las tablas",
+            ],
+        },
+    ]
+
+    active = set(build_servers().keys())
+    powerbi_only = _env_truthy("AI_LAB_POWERBI_ONLY")
+    out: list[dict] = []
+    for entry in catalog:
+        if entry["id"] not in active:
+            if entry["id"] == "powerbi" and not powerbi_only:
+                out.append({
+                    "id": entry["id"],
+                    "label": entry["label"],
+                    "description": entry["description"],
+                    "color": entry["color"],
+                    "prompts": entry["prompts"],
+                    "disabled": True,
+                    "disabled_hint": (
+                        "Activa Power BI con .\\run_web_powerbi.ps1 "
+                        "(Desktop abierto con tu .pbix)"
+                    ),
+                })
+            continue
+        item = {k: v for k, v in entry.items() if k != "requires"}
+        out.append(item)
+    return out

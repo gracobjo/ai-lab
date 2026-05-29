@@ -77,10 +77,19 @@ En LM Studio, el contexto del modelo debe ser suficiente (≥ 8192 tokens si usa
 | `GET /memory` | Historial de conversación (`data/memory.json`) |
 | `DELETE /memory` | Borrar historial |
 | `GET /tools` | Lista de herramientas MCP |
+| `GET /prompts` | Frases de ejemplo agrupadas por servidor MCP |
 | `POST /chat` | Enviar mensaje al agente (API REST) |
 | `GET /docs` | Documentación OpenAPI (Swagger) |
 
 La memoria del chat web es la misma que la del CLI (`data/memory.json`).
+
+### Frases de ejemplo (chips)
+
+Al abrir el chat sin historial verás **tarjetas por servidor MCP** con frases listas para enviar. También puedes usar el botón **Ejemplos** en la cabecera.
+
+Las frases provienen de `GET /prompts` (catálogo en `agent_core.get_mcp_prompt_catalog()`). Detalle por servidor: [mcp-servers.md](mcp-servers.md).
+
+Power BI: las frases de tablas/columnas usan **flujos directos** en el backend cuando el LLM no invoca tools bien (modelos pequeños). Ver [powerbi-mcp.md](powerbi-mcp.md).
 
 ---
 
@@ -97,6 +106,7 @@ curl http://localhost:8000/health
 curl http://localhost:8000/memory
 curl -X DELETE http://localhost:8000/memory
 curl http://localhost:8000/tools
+curl http://localhost:8000/prompts
 ```
 
 ---

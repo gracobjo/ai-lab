@@ -93,7 +93,7 @@ Para modelos pequeños (`qwen2.5-3b-instruct`) que no hacen function calling, ai
 
 | Petición (ejemplos) | Flujo |
 |---------------------|--------|
-| *Lista las tablas* / *listar tablas del modelo* | ListLocalInstances → Connect → `table_operations` List |
+| *Lista las tablas* / *lista todas las tablas* / *Conéctate a mi-modelo y lista…* | ListLocalInstances → Connect → `table_operations` List |
 | *Lista las columnas de la tabla california_housing* | ListLocalInstances → Connect → `column_operations` List |
 
 Condiciones:
@@ -104,6 +104,8 @@ Condiciones:
 - Para columnas: incluye el nombre de la tabla (`california_housing`, *tabla X*, etc.).
 
 La respuesta se formatea como lista legible (nombre, tipo de dato, summarizeBy), no como JSON crudo.
+
+En la **interfaz web**, las frases Power BI aparecen como chips en la bienvenida y en **Ejemplos**; las tres frases del catálogo disparan estos flujos directos. Ver [mcp-servers.md](mcp-servers.md).
 
 **Atajo tablas (legacy):** si pides listar tablas e incluyes `initialCatalog "mi-modelo"`, también dispara el flujo directo.
 
