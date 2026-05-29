@@ -13,6 +13,7 @@ build/
 data/chroma_db/
 data/memory.json
 data/thoughts.jsonl
+data/runtime_flags.json
 
 # Entorno
 .env

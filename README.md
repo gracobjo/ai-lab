@@ -14,6 +14,8 @@ Abre http://localhost:8000 (requiere LM Studio en el puerto 1234).
 
 → [Guía del servidor web](docs/web-server.md)
 
+**Con Power BI Desktop:** `.\run_web_powerbi.ps1` → [docs/powerbi-mcp.md](docs/powerbi-mcp.md)
+
 ### Terminal
 
 ```powershell

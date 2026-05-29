@@ -20,9 +20,11 @@ from pydantic import BaseModel
 from agent_core import (
     BASE_PATH,
     MODEL_NAME,
+    _env_truthy,
     clear_memory,
     list_mcp_tools,
     load_memory,
+    powerbi_enabled,
     run_agent_query,
 )
 
@@ -653,7 +655,13 @@ WEB_UI = """<!DOCTYPE html>
       if (r.ok) {
         const d = await r.json();
         setStatus(true, d.model);
-        addSystemBanner(`Conectado · ${d.model}`);
+        let banner = `Conectado · ${d.model}`;
+        if (d.powerbi_mcp) {
+          banner += ' · Power BI MCP activo';
+        } else {
+          addError('Power BI MCP no activo. Cierra el servidor y ejecuta .\\\\run_web_powerbi.ps1 (no run_web.ps1).');
+        }
+        addSystemBanner(banner);
       } else setStatus(false);
     } catch {
       setStatus(false);
@@ -819,6 +827,8 @@ async def health():
         "model": MODEL_NAME,
         "base": str(BASE_PATH),
         "lm_studio": "http://localhost:1234/v1",
+        "powerbi_mcp": powerbi_enabled(),
+        "powerbi_readonly": _env_truthy("AI_LAB_POWERBI_READONLY"),
     }
 
 

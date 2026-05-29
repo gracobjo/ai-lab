@@ -16,7 +16,9 @@ Interfaz de chat en el navegador para hablar con el agente MCP sin usar la termi
    - Carga un modelo (por defecto el proyecto usa `qwen2.5-3b-instruct`).
    - Activa el **servidor local** en el puerto **1234** (menú *Local Server* → *Start Server*).
 
-3. **Node.js** (solo si usas el servidor MCP `filesystem` vía `npx`).
+3. **Node.js** (para `filesystem` vía `npx` y, opcionalmente, Power BI MCP).
+
+**Power BI (opcional):** ver [docs/powerbi-mcp.md](powerbi-mcp.md). Arranque rápido: `.\run_web_powerbi.ps1` (requiere Desktop abierto).
 
 ---
 
