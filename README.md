@@ -16,7 +16,9 @@ Abre http://localhost:8000 (requiere LM Studio en el puerto 1234).
 
 **Con Power BI Desktop:** `.\run_web_powerbi.ps1` → [docs/powerbi-mcp.md](docs/powerbi-mcp.md)
 
-**Análisis / cuadro de mando desde CSV** (sin Power BI): [docs/analytics-dashboard.md](docs/analytics-dashboard.md) — dataset `california_housing.csv`
+**Análisis / cuadro de mando desde CSV** (sin Power BI): [docs/analytics-dashboard.md](docs/analytics-dashboard.md)
+
+**Diagramas de flujo desde CSV** (sustituto Visio): [docs/flow-diagrams.md](docs/flow-diagrams.md) — `tramites.csv`
 
 ### Terminal
 

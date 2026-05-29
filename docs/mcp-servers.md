@@ -68,15 +68,15 @@ Las frases se sirven desde `GET /prompts` y se definen en `get_mcp_prompt_catalo
 | Explícame el flujo desde la pregunta del usuario hasta la respuesta del agente |
 | Piensa paso a paso cómo añadir una nueva tool MCP al proyecto |
 
-#### analytics — Análisis de datos
+#### analytics — Análisis de datos y flujos
 
 | Frase | Flujo directo |
 |-------|---------------|
-| Analiza california_housing.csv y resume las métricas clave | Dashboard HTML |
+| Genera el diagrama de flujo de tramites.csv desde REGISTRO DE SOLICITUD | Diagrama HTML |
+| Analiza la estructura del proceso en tramites.csv | Análisis grafo |
 | Genera un cuadro de mando con gráficos de california_housing.csv | Dashboard HTML |
-| Prepara un dashboard con KPIs: precio, ingreso y zonas oceánicas | Dashboard HTML |
 
-Guía completa: [analytics-dashboard.md](analytics-dashboard.md).
+Guías: [analytics-dashboard.md](analytics-dashboard.md) · [flow-diagrams.md](flow-diagrams.md).
 
 #### powerbi — Power BI (requiere `run_web_powerbi.ps1`)
 
@@ -180,8 +180,12 @@ Permite al agente listar, leer y escribir archivos dentro del workspace (sandbox
 |------|-------------|
 | `analyze_dataset` | Estadísticas y correlaciones de un CSV |
 | `build_dashboard` | Cuadro de mando HTML con gráficos |
+| `analyze_flow` | Análisis de grafo de trámites (CSV tipo Visio) |
+| `build_flow_diagram` | Diagrama de flujo HTML + Mermaid |
 
 **Cuándo usarlo:** análisis del dataset `california_housing.csv` (u otro CSV en el proyecto) **sin** Power BI Desktop. Ver [analytics-dashboard.md](analytics-dashboard.md).
+
+**Diagramas de flujo:** `tramites.csv` → [flow-diagrams.md](flow-diagrams.md).
 
 ---
 

@@ -264,8 +264,22 @@ _ANALYTICS_KEYWORDS = (
     "informe", "reporte", "visualiza", "kpi", "kpis",
 )
 
+_FLOW_KEYWORDS = (
+    "diagrama de flujo", "diagrama flujo", "flowchart", "flow chart",
+    "visio", "mapa de proceso", "tramites", "trámites", "tramite", "trámite",
+)
+
+
+def _is_flow_query(user_input: str) -> bool:
+    text = user_input.lower()
+    if any(k in text for k in _FLOW_KEYWORDS):
+        return True
+    return "diagrama" in text and ("flujo" in text or "proceso" in text)
+
 
 def _is_analytics_query(user_input: str) -> bool:
+    if _is_flow_query(user_input):
+        return False
     text = user_input.lower()
     return any(k in text for k in _ANALYTICS_KEYWORDS)
 
@@ -278,6 +292,27 @@ def _is_powerbi_query(user_input: str) -> bool:
 def _extract_csv_name(user_input: str) -> str | None:
     match = re.search(r"([\w-]+\.csv)", user_input, re.I)
     return match.group(1) if match else None
+
+
+def _extract_tramite_root(user_input: str) -> int | None:
+    if re.search(r"registro\s+de\s+solicitud", user_input, re.I):
+        return 31900
+    match = re.search(r"\b(31\d{3}|32\d{3}|33\d{3}|32305|336\d{2})\b", user_input)
+    return int(match.group(1)) if match else None
+
+
+def _should_run_flow_diagram(user_input: str) -> bool:
+    if not _is_flow_query(user_input):
+        return False
+    text = user_input.lower()
+    return any(
+        k in text
+        for k in ("genera", "generar", "crea", "crear", "diagrama", "visio", "flowchart", "mermaid")
+    )
+
+
+def _should_run_flow_analyze(user_input: str) -> bool:
+    return _is_flow_query(user_input) and not _should_run_flow_diagram(user_input)
 
 
 def _should_run_analytics_dashboard(user_input: str) -> bool:
@@ -593,6 +628,24 @@ def _analytics_dashboard_direct(user_input: str) -> tuple[str, list[str], int]:
     return summary, ["analytics__build_dashboard"], 1
 
 
+def _flow_diagram_direct(user_input: str) -> tuple[str, list[str], int]:
+    from analytics.flow_diagram import generate_flow_diagram, resolve_flow_csv
+
+    name = _extract_csv_name(user_input)
+    path = resolve_flow_csv(name)
+    root = _extract_tramite_root(user_input) or 31900
+    summary = generate_flow_diagram(path, root_id=root, max_depth=4)
+    return summary, ["analytics__build_flow_diagram"], 1
+
+
+def _flow_analyze_direct(user_input: str) -> tuple[str, list[str], int]:
+    from analytics.flow_diagram import analyze_flow_only, resolve_flow_csv
+
+    name = _extract_csv_name(user_input)
+    path = resolve_flow_csv(name)
+    return analyze_flow_only(path), ["analytics__analyze_flow"], 1
+
+
 def _looks_like_fake_tool_json(content: str) -> bool:
     c = (content or "").strip()
     if c.startswith("{") and ("\"request\"" in c or "\"operation\"" in c):
@@ -612,6 +665,10 @@ def _powerbi_tool_choice(tools_for_step: list[dict], tools_used: list[str]) -> s
 
 
 def _tools_for_message(user_input: str, all_tools: list[dict]) -> list[dict]:
+    if _is_flow_query(user_input):
+        ana = _only_analytics_tools(all_tools)
+        if ana:
+            return ana
     if _should_run_analytics_dashboard(user_input) or (
         _is_analytics_query(user_input) and not _is_powerbi_query(user_input)
     ):
@@ -690,6 +747,32 @@ CUANDO USAR thinking__think:
 
         catalog = _extract_powerbi_catalog(user_input) or "mi-modelo"
         table_name = _extract_table_name(user_input)
+
+        if _should_run_flow_diagram(user_input):
+            try:
+                final_answer, direct_tools, steps_done = _flow_diagram_direct(user_input)
+                tools_used.extend(direct_tools)
+                save_memory([
+                    {"role": "user", "content": user_input},
+                    {"role": "assistant", "content": final_answer},
+                ])
+                return
+            except Exception as exc:
+                final_answer = f"Error generando diagrama de flujo: {exc}"
+                return
+
+        if _should_run_flow_analyze(user_input):
+            try:
+                final_answer, direct_tools, steps_done = _flow_analyze_direct(user_input)
+                tools_used.extend(direct_tools)
+                save_memory([
+                    {"role": "user", "content": user_input},
+                    {"role": "assistant", "content": final_answer},
+                ])
+                return
+            except Exception as exc:
+                final_answer = f"Error analizando flujo: {exc}"
+                return
 
         if _should_run_analytics_dashboard(user_input):
             try:
@@ -927,12 +1010,12 @@ def get_mcp_prompt_catalog() -> list[dict]:
         {
             "id": "analytics",
             "label": "Análisis de datos",
-            "description": "Cuadro de mando HTML desde CSV (sin abrir Power BI)",
+            "description": "Dashboards y diagramas de flujo desde CSV",
             "color": "#10b981",
             "prompts": [
-                "Analiza california_housing.csv y resume las métricas clave",
+                "Genera el diagrama de flujo de tramites.csv desde REGISTRO DE SOLICITUD",
+                "Analiza la estructura del proceso en tramites.csv",
                 "Genera un cuadro de mando con gráficos de california_housing.csv",
-                "Prepara un dashboard con KPIs: precio, ingreso y zonas oceánicas",
             ],
         },
         {

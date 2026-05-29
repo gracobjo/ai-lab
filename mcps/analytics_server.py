@@ -14,6 +14,12 @@ if str(BASE_PATH) not in sys.path:
     sys.path.insert(0, str(BASE_PATH))
 
 from analytics.dataset_report import analyze_csv, generate_dashboard, resolve_csv_path
+from analytics.flow_diagram import (
+    analyze_flow_csv,
+    analyze_flow_only,
+    generate_flow_diagram,
+    resolve_flow_csv,
+)
 
 mcp = FastMCP("analytics-server")
 
@@ -37,6 +43,29 @@ def build_dashboard(csv_path: str = "california_housing.csv") -> str:
         return str(e)
     out_file, summary = generate_dashboard(path)
     return summary
+
+
+@mcp.tool()
+def analyze_flow(csv_path: str = "tramites.csv") -> str:
+    """Analiza un CSV de trámites/proceso (transiciones entre pasos, estilo Visio)."""
+    try:
+        return analyze_flow_only(resolve_flow_csv(csv_path))
+    except (FileNotFoundError, ValueError) as e:
+        return str(e)
+
+
+@mcp.tool()
+def build_flow_diagram(
+    csv_path: str = "tramites.csv",
+    root_tramite_id: int = 31900,
+    max_depth: int = 4,
+) -> str:
+    """Genera diagrama de flujo HTML+Mermaid desde CSV de trámites (sustituto de Visio)."""
+    try:
+        path = resolve_flow_csv(csv_path)
+        return generate_flow_diagram(path, root_id=root_tramite_id, max_depth=max_depth)
+    except (FileNotFoundError, ValueError) as e:
+        return str(e)
 
 
 if __name__ == "__main__":
