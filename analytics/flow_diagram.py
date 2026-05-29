@@ -4,6 +4,7 @@ Generación de diagramas de flujo desde CSV (Visio / tramites administrativos).
 
 from __future__ import annotations
 
+import json
 import re
 from collections import deque
 from dataclasses import dataclass, field
@@ -21,6 +22,35 @@ TRAMITES_COLUMNS = {
     "order": "num_orden",
     "to_id": "id_tramite_siguiente",
     "to_label": "descripcion_tramite_siguiente",
+}
+
+# Colores por tipo de trámite (vis-network)
+SHAPE_STYLES: dict[str, dict] = {
+    "start": {
+        "color": {"background": "#22c55e", "border": "#15803d", "highlight": {"background": "#4ade80", "border": "#166534"}},
+        "shape": "ellipse",
+        "label": "Inicio",
+    },
+    "end": {
+        "color": {"background": "#ef4444", "border": "#b91c1c", "highlight": {"background": "#f87171", "border": "#991b1b"}},
+        "shape": "ellipse",
+        "label": "Fin / publicación",
+    },
+    "decision": {
+        "color": {"background": "#f59e0b", "border": "#b45309", "highlight": {"background": "#fbbf24", "border": "#92400e"}},
+        "shape": "diamond",
+        "label": "Propuesta / resolución",
+    },
+    "document": {
+        "color": {"background": "#06b6d4", "border": "#0e7490", "highlight": {"background": "#22d3ee", "border": "#155e75"}},
+        "shape": "box",
+        "label": "Notificación",
+    },
+    "process": {
+        "color": {"background": "#8b5cf6", "border": "#6d28d9", "highlight": {"background": "#a78bfa", "border": "#5b21b6"}},
+        "shape": "box",
+        "label": "Proceso",
+    },
 }
 
 
@@ -243,6 +273,12 @@ def analyze_flow_csv(path: Path | None = None) -> str:
 
     lines.extend([
         "",
+        "## Interacción (visor HTML)",
+        "- **Colores** por tipo: inicio (verde), notificación (cyan), resolución (ámbar), fin (rojo), proceso (violeta).",
+        "- **Arrastrar** cualquier nodo para reorganizar.",
+        "- **Clic** en un nodo: resalta trámites anteriores y siguientes + panel lateral.",
+        "- **Buscar** por ID o nombre; **Quitar foco** / **Centrar vista**.",
+        "",
         "## Generación",
         "Pide: *Genera el diagrama de flujo de tramites.csv*",
         "Vista por defecto: desde **31900 REGISTRO DE SOLICITUD** (4 niveles).",
@@ -251,37 +287,288 @@ def analyze_flow_csv(path: Path | None = None) -> str:
     return "\n".join(lines)
 
 
-def _write_flow_html(path: Path, graph: FlowGraph, mermaid: str, title_suffix: str = "") -> Path:
+def graph_to_vis_payload(graph: FlowGraph) -> dict:
+    """Datos para vis-network (nodos + aristas)."""
+    nodes = []
+    for node in graph.nodes.values():
+        style = SHAPE_STYLES.get(node.shape, SHAPE_STYLES["process"])
+        short = node.label if len(node.label) <= 36 else node.label[:33] + "…"
+        nodes.append({
+            "id": node.node_id,
+            "label": f"{node.raw_id or ''}\n{short}".strip(),
+            "title": f"ID {node.raw_id}\n{node.label}",
+            "group": node.shape,
+            "shape": style["shape"],
+            "color": style["color"],
+            "font": {"color": "#ffffff", "size": 13, "face": "Segoe UI"},
+            "borderWidth": 2,
+            "raw_id": node.raw_id,
+            "full_label": node.label,
+        })
+    edges = []
+    for i, edge in enumerate(graph.edges):
+        edges.append({
+            "id": f"e{i}",
+            "from": edge.source,
+            "to": edge.target,
+            "label": edge.label,
+            "title": f"Rama {edge.label}" if edge.label else "",
+            "font": {"color": "#cbd5e1", "size": 11, "strokeWidth": 0},
+            "color": {"color": "#64748b", "highlight": "#93c5fd", "opacity": 0.85},
+            "arrows": "to",
+            "smooth": {"type": "cubicBezier", "forceDirection": "vertical", "roundness": 0.35},
+        })
+    return {"nodes": nodes, "edges": edges}
+
+
+def _write_flow_html(
+    path: Path,
+    graph: FlowGraph,
+    mermaid: str,
+    title_suffix: str = "",
+    layout: str = "hierarchical",
+    default_focus: str | None = None,
+) -> Path:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     stem = path.stem + title_suffix
     mmd_file = REPORTS_DIR / f"{stem}.mmd"
     html_file = REPORTS_DIR / f"{stem}.html"
     mmd_file.write_text(mermaid, encoding="utf-8")
 
+    payload = graph_to_vis_payload(graph)
+    data_json = json.dumps(payload, ensure_ascii=False)
+    legend_items = "".join(
+        f'<span class="legend-item"><i style="background:{s["color"]["background"]}"></i>{s["label"]}</span>'
+        for s in SHAPE_STYLES.values()
+    )
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     title = f"Diagrama de flujo — {path.name}{title_suffix.replace('_', ' ')}"
+    focus_hint = default_focus or ""
+
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
+  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
   <style>
-    body {{ font-family: "Segoe UI", system-ui, sans-serif; background: #0c0e14; color: #e8eaef; margin: 0; padding: 20px; }}
-    h1 {{ font-size: 1.25rem; }}
-    .meta {{ color: #8b93a7; font-size: 0.85rem; margin-bottom: 16px; }}
-    .diagram {{ background: #141820; border: 1px solid #2a3142; border-radius: 12px; padding: 16px; overflow: auto; min-height: 200px; }}
+    * {{ box-sizing: border-box; }}
+    body {{ font-family: "Segoe UI", system-ui, sans-serif; background: #0c0e14; color: #e8eaef; margin: 0; }}
+    header {{ padding: 14px 18px; border-bottom: 1px solid #2a3142; background: #141820; }}
+    h1 {{ font-size: 1.1rem; margin: 0 0 6px; }}
+    .meta {{ color: #8b93a7; font-size: 0.8rem; }}
+    .toolbar {{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }}
+    .toolbar input {{
+      flex: 1; min-width: 180px; padding: 8px 12px; border-radius: 8px;
+      border: 1px solid #2a3142; background: #0c0e14; color: #e8eaef;
+    }}
+    .toolbar button {{
+      padding: 8px 14px; border-radius: 8px; border: 1px solid #2a3142;
+      background: #1c2230; color: #e8eaef; cursor: pointer; font-size: 0.82rem;
+    }}
+    .toolbar button:hover {{ border-color: #3b82f6; background: #2563eb22; }}
+    .legend {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 0.75rem; color: #8b93a7; }}
+    .legend-item {{ display: flex; align-items: center; gap: 5px; }}
+    .legend-item i {{ width: 12px; height: 12px; border-radius: 3px; display: inline-block; }}
+    .layout {{ display: grid; grid-template-columns: 1fr 300px; min-height: calc(100vh - 120px); }}
+    @media (max-width: 900px) {{ .layout {{ grid-template-columns: 1fr; }} }}
+    #network {{
+      width: 100%; height: calc(100vh - 120px); min-height: 480px;
+      background: #0a0c10; border-right: 1px solid #2a3142;
+    }}
+    aside {{
+      padding: 16px; background: #141820; overflow-y: auto;
+      border-left: 1px solid #2a3142;
+    }}
+    aside h2 {{ font-size: 0.95rem; margin: 0 0 8px; color: #93c5fd; }}
+    aside .hint {{ font-size: 0.78rem; color: #8b93a7; line-height: 1.45; margin-bottom: 14px; }}
+    aside section {{ margin-bottom: 16px; }}
+    aside h3 {{ font-size: 0.78rem; text-transform: uppercase; letter-spacing: .05em; color: #64748b; margin: 0 0 6px; }}
+    .tramite-list {{ list-style: none; padding: 0; margin: 0; }}
+    .tramite-list li {{
+      padding: 8px 10px; margin-bottom: 4px; border-radius: 8px;
+      background: #1c2230; border: 1px solid #2a3142; font-size: 0.78rem; cursor: pointer;
+    }}
+    .tramite-list li:hover {{ border-color: #3b82f6; }}
+    .tramite-list li .tid {{ color: #93c5fd; font-weight: 600; }}
+    .tramite-list li.focused {{ border-color: #22c55e; background: #14532d33; }}
+    .empty {{ color: #64748b; font-size: 0.8rem; font-style: italic; }}
   </style>
 </head>
 <body>
-  <h1>{title}</h1>
-  <p class="meta">ai-lab · {generated} · {len(graph.nodes)} trámites · {len(graph.edges)} transiciones</p>
-  <div class="diagram mermaid">
-{mermaid}
+  <header>
+    <h1>{title}</h1>
+    <p class="meta">ai-lab · {generated} · {len(graph.nodes)} trámites · {len(graph.edges)} transiciones · Arrastra nodos · Clic para foco</p>
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="Buscar trámite por ID o nombre…" autocomplete="off">
+      <button type="button" id="btn-reset">Quitar foco</button>
+      <button type="button" id="btn-fit">Centrar vista</button>
+    </div>
+    <div class="legend">{legend_items}</div>
+  </header>
+  <div class="layout">
+    <div id="network"></div>
+    <aside>
+      <h2 id="focus-title">Selecciona un trámite</h2>
+      <p class="hint">Haz clic en un nodo para resaltar sus <strong>trámites anteriores</strong> (entrada) y <strong>siguientes</strong> (salida). Arrastra cualquier nodo para reorganizar.</p>
+      <section>
+        <h3>Trámites anteriores</h3>
+        <ul class="tramite-list" id="list-prev"><li class="empty">—</li></ul>
+      </section>
+      <section>
+        <h3>Trámite seleccionado</h3>
+        <ul class="tramite-list" id="list-current"><li class="empty">Clic en el diagrama</li></ul>
+      </section>
+      <section>
+        <h3>Trámites siguientes</h3>
+        <ul class="tramite-list" id="list-next"><li class="empty">—</li></ul>
+      </section>
+    </aside>
   </div>
-  <script type="module">
-    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
-    mermaid.initialize({{ startOnLoad: true, theme: "dark", flowchart: {{ useMaxWidth: true, htmlLabels: true, curve: "basis" }} }});
+  <script>
+    const GRAPH = {data_json};
+    const DEFAULT_FOCUS = {json.dumps(focus_hint)};
+    const LAYOUT_MODE = {json.dumps(layout)};
+
+    const nodes = new vis.DataSet(GRAPH.nodes);
+    const edges = new vis.DataSet(GRAPH.edges);
+    const container = document.getElementById("network");
+
+    const options = {{
+      nodes: {{ shadow: true, margin: 10 }},
+      edges: {{ width: 1.5 }},
+      interaction: {{
+        dragNodes: true,
+        dragView: true,
+        zoomView: true,
+        hover: true,
+        tooltipDelay: 120,
+      }},
+      physics: LAYOUT_MODE === "physics" ? {{
+        enabled: true,
+        barnesHut: {{ gravitationalConstant: -4200, springLength: 140, springConstant: 0.04 }},
+        stabilization: {{ iterations: 180 }},
+      }} : {{ enabled: false }},
+      layout: LAYOUT_MODE === "hierarchical" ? {{
+        hierarchical: {{
+          enabled: true,
+          direction: "UD",
+          sortMethod: "directed",
+          levelSeparation: 110,
+          nodeSpacing: 160,
+          treeSpacing: 200,
+        }},
+      }} : {{}},
+    }};
+
+    const network = new vis.Network(container, {{ nodes, edges }}, options);
+
+    const nodeById = Object.fromEntries(GRAPH.nodes.map(n => [n.id, n]));
+    const incoming = {{}};
+    const outgoing = {{}};
+    GRAPH.edges.forEach(e => {{
+      (incoming[e.to] ||= []).push(e);
+      (outgoing[e.from] ||= []).push(e);
+    }});
+
+    let focusedId = null;
+
+    function renderList(el, items, emptyText) {{
+      el.innerHTML = "";
+      if (!items.length) {{
+        el.innerHTML = `<li class="empty">${{emptyText}}</li>`;
+        return;
+      }}
+      items.forEach(item => {{
+        const li = document.createElement("li");
+        li.innerHTML = `<span class="tid">${{item.raw_id || item.id}}</span><br>${{item.full_label || item.label}}`;
+        li.addEventListener("click", () => focusNode(item.id));
+        el.appendChild(li);
+      }});
+    }}
+
+    function neighborNodes(edgeList, pickOther) {{
+      const seen = new Set();
+      const out = [];
+      edgeList.forEach(e => {{
+        const oid = pickOther(e);
+        if (!seen.has(oid) && nodeById[oid]) {{
+          seen.add(oid);
+          out.push(nodeById[oid]);
+        }}
+      }});
+      return out;
+    }}
+
+    function applyFocusVisuals(activeSet) {{
+      const nodeUpdates = GRAPH.nodes.map(n => {{
+        const on = !focusedId || activeSet.has(n.id);
+        return {{ id: n.id, opacity: on ? 1 : 0.15, font: {{ color: on ? "#ffffff" : "#475569" }} }};
+      }});
+      nodes.update(nodeUpdates);
+      const edgeUpdates = GRAPH.edges.map(e => {{
+        const on = !focusedId || (activeSet.has(e.from) && activeSet.has(e.to));
+        return {{
+          id: e.id,
+          color: {{ color: on ? "#94a3b8" : "#334155", opacity: on ? 1 : 0.06 }},
+          width: on ? 2.5 : 0.5,
+        }};
+      }});
+      edges.update(edgeUpdates);
+    }}
+
+    function focusNode(id, pan = true) {{
+      focusedId = id;
+      const prev = neighborNodes(incoming[id] || [], e => e.from);
+      const next = neighborNodes(outgoing[id] || [], e => e.to);
+      const active = new Set([id, ...prev.map(n => n.id), ...next.map(n => n.id)]);
+
+      const cur = nodeById[id];
+      document.getElementById("focus-title").textContent = cur.full_label || cur.label;
+      renderList(document.getElementById("list-prev"), prev, "Sin trámites anteriores");
+      renderList(document.getElementById("list-current"), [cur], "");
+      renderList(document.getElementById("list-next"), next, "Sin trámites siguientes");
+      applyFocusVisuals(active);
+      if (pan) network.focus(id, {{ scale: 1.05, animation: {{ duration: 450, easingFunction: "easeInOutQuad" }} }});
+    }}
+
+    function resetFocus() {{
+      focusedId = null;
+      nodes.update(GRAPH.nodes);
+      edges.update(GRAPH.edges);
+      document.getElementById("focus-title").textContent = "Selecciona un trámite";
+      renderList(document.getElementById("list-prev"), [], "—");
+      renderList(document.getElementById("list-current"), [], "Clic en el diagrama");
+      renderList(document.getElementById("list-next"), [], "—");
+    }}
+
+    network.on("click", p => {{ if (p.nodes.length) focusNode(p.nodes[0]); }});
+    document.getElementById("btn-reset").onclick = resetFocus;
+    document.getElementById("btn-fit").onclick = () => network.fit({{ animation: true }});
+
+    document.getElementById("search").addEventListener("input", ev => {{
+      const q = ev.target.value.trim().toLowerCase();
+      if (!q) return;
+      const hit = GRAPH.nodes.find(n =>
+        (n.raw_id && String(n.raw_id).includes(q)) ||
+        (n.full_label && n.full_label.toLowerCase().includes(q))
+      );
+      if (hit) focusNode(hit.id);
+    }});
+
+    network.once("stabilizationIterationsDone", () => {{
+      resetFocus();
+      if (DEFAULT_FOCUS && nodeById[DEFAULT_FOCUS]) focusNode(DEFAULT_FOCUS, false);
+      else network.fit({{ animation: true }});
+    }});
+    if (LAYOUT_MODE === "hierarchical") {{
+      setTimeout(() => {{
+        resetFocus();
+        if (DEFAULT_FOCUS && nodeById[DEFAULT_FOCUS]) focusNode(DEFAULT_FOCUS, false);
+        network.fit({{ animation: true }});
+      }}, 300);
+    }}
   </script>
 </body>
 </html>"""
@@ -303,13 +590,27 @@ def generate_flow_diagram(
 
     # Vista principal (legible): desde REGISTRO DE SOLICITUD
     focus = subgraph(full, root_id, max_depth) if root_id is not None else full
+    focus_key = _safe_id(root_id) if root_id is not None else None
+    suffix = "_registro" if root_id == 31900 else (f"_from_{root_id}" if root_id else "")
     focus_html = _write_flow_html(
-        path, focus, graph_to_mermaid(focus), "_registro" if root_id == 31900 else f"_from_{root_id}"
+        path,
+        focus,
+        graph_to_mermaid(focus),
+        suffix,
+        layout="hierarchical",
+        default_focus=focus_key,
     )
 
     full_html = None
     if include_full and root_id is not None:
-        full_html = _write_flow_html(path, full, graph_to_mermaid(full), "_completo")
+        full_html = _write_flow_html(
+            path,
+            full,
+            graph_to_mermaid(full),
+            "_completo",
+            layout="physics",
+            default_focus=None,
+        )
 
     lines = [
         f"Diagrama de flujo generado desde `{path.name}`.",

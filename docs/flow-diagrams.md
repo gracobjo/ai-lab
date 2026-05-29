@@ -32,10 +32,30 @@ Chips en la tarjeta **Análisis de datos** en http://localhost:8000
 | `data/reports/tramites_completo.html` | Grafo completo (86 trámites) |
 | `data/reports/tramites_*.mmd` | Fuente Mermaid (editable) |
 
-Abrir en el navegador:
+Abrir en el navegador (visor **interactivo** con colores, arrastre y foco por clic):
 
 - http://localhost:8000/reports/tramites_registro.html
 - http://localhost:8000/reports/tramites_completo.html
+
+### Controles del visor
+
+| Acción | Efecto |
+|--------|--------|
+| **Clic en nodo** | Resalta trámites anteriores y siguientes; panel lateral |
+| **Arrastrar nodo** | Mueve la entidad en el canvas |
+| **Buscar** | Ir a trámite por ID o nombre |
+| **Quitar foco** | Muestra todo el grafo a color de nuevo |
+| **Centrar vista** | Ajusta zoom al diagrama |
+
+### Colores
+
+| Color | Tipo |
+|-------|------|
+| Verde | Inicio (Registro) |
+| Cyan | Notificación |
+| Ámbar | Propuesta / resolución |
+| Rojo | Fin / publicación BOCYL |
+| Violeta | Proceso intermedio |
 
 ## Tools MCP (`analytics__*`)
 
