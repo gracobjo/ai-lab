@@ -95,6 +95,10 @@ def build_servers() -> dict[str, StdioServerParameters]:
             command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
             args=[str(BASE_PATH / "mcps" / "thinking_server.py")],
         ),
+        "analytics": StdioServerParameters(
+            command=str(BASE_PATH / "venv" / "Scripts" / "python.exe"),
+            args=[str(BASE_PATH / "mcps" / "analytics_server.py")],
+        ),
     }
     if powerbi_enabled():
         servers["powerbi"] = _powerbi_server_params()
@@ -254,10 +258,52 @@ _POWERBI_KEYWORDS = (
     "pbix", "fabric",
 )
 
+_ANALYTICS_KEYWORDS = (
+    "analiza", "análisis", "analisis", "dashboard", "cuadro de mando",
+    "gráfico", "grafico", "gráficos", "graficos", "métricas", "metricas",
+    "informe", "reporte", "visualiza", "kpi", "kpis",
+)
+
+
+def _is_analytics_query(user_input: str) -> bool:
+    text = user_input.lower()
+    return any(k in text for k in _ANALYTICS_KEYWORDS)
+
 
 def _is_powerbi_query(user_input: str) -> bool:
     text = user_input.lower()
     return any(k in text for k in _POWERBI_KEYWORDS)
+
+
+def _extract_csv_name(user_input: str) -> str | None:
+    match = re.search(r"([\w-]+\.csv)", user_input, re.I)
+    return match.group(1) if match else None
+
+
+def _should_run_analytics_dashboard(user_input: str) -> bool:
+    if not _is_analytics_query(user_input):
+        return False
+    text = user_input.lower()
+    # Análisis vía DAX/modelo Power BI (sin HTML) → otro flujo
+    if any(k in text for k in ("power bi", "powerbi", "dax", "pbix")) and not any(
+        k in text for k in ("dashboard", "cuadro de mando", "gráfico", "grafico", "html", ".csv")
+    ):
+        return False
+    return True
+
+
+def _should_run_powerbi_dax_analysis(user_input: str) -> bool:
+    if not _is_powerbi_query(user_input) or _should_run_analytics_dashboard(user_input):
+        return False
+    text = user_input.lower()
+    return any(
+        k in text
+        for k in ("analiza", "análisis", "analisis", "métricas", "metricas", "kpi", "resumen del modelo")
+    )
+
+
+def _only_analytics_tools(all_tools: list[dict]) -> list[dict]:
+    return [t for t in all_tools if t["function"]["name"].startswith("analytics__")]
 
 
 def _only_powerbi_tools(all_tools: list[dict]) -> list[dict]:
@@ -474,6 +520,79 @@ async def _powerbi_list_columns_direct(
     return "\n\n".join(sections), used, 3
 
 
+def _format_dax_table(raw: str, label: str) -> str:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return f"{label}:\n{raw}"
+    if not payload.get("success"):
+        return f"{label} (error):\n{raw}"
+    rows = payload.get("data") or payload.get("results") or []
+    if isinstance(rows, list) and rows:
+        return f"- {label}: {rows[0] if len(rows) == 1 else rows}"
+    return f"- {label}: {payload.get('message', raw[:200])}"
+
+
+async def _powerbi_dax_analysis_direct(
+    tool_map: dict, catalog: str, table: str = "california_housing"
+) -> tuple[str, list[str], int]:
+    """Conectar → GetStats + consultas DAX de KPIs."""
+    ok, used, connect_summary = await _powerbi_connect_direct(tool_map, catalog)
+    sections = [connect_summary]
+    if not ok:
+        return "\n\n".join(sections), used, 2
+
+    stats_raw = await _mcp_call(
+        tool_map,
+        "powerbi__model_operations",
+        {"request": {"operation": "GetStats"}},
+    )
+    used.append("powerbi__model_operations")
+    sections.append(f"Estadísticas del modelo:\n{stats_raw[:1500]}")
+
+    dax_queries = [
+        ("Filas en tabla", f'EVALUATE ROW("valor", COUNTROWS({table}))'),
+        (
+            "Precio medio vivienda",
+            f'EVALUATE ROW("valor", AVERAGE({table}[median_house_value]))',
+        ),
+        (
+            "Ingreso medio",
+            f'EVALUATE ROW("valor", AVERAGE({table}[median_income]))',
+        ),
+        (
+            "Antigüedad media viviendas",
+            f'EVALUATE ROW("valor", AVERAGE({table}[housing_median_age]))',
+        ),
+    ]
+    sections.append("KPIs (DAX Execute):")
+    for label, query in dax_queries:
+        raw = await _mcp_call(
+            tool_map,
+            "powerbi__dax_query_operations",
+            {"request": {"operation": "Execute", "query": query}},
+        )
+        used.append("powerbi__dax_query_operations")
+        sections.append(_format_dax_table(raw, label))
+
+    sections.append(
+        "\nNota: el MCP de Power BI no crea gráficos ni páginas de informe. "
+        "Para un cuadro de mando visual sin abrir Desktop, pide: "
+        "'Genera un cuadro de mando HTML de california_housing.csv'."
+    )
+    return "\n\n".join(sections), used, len(used)
+
+
+def _analytics_dashboard_direct(user_input: str) -> tuple[str, list[str], int]:
+    """Genera dashboard HTML desde CSV (sin Power BI Desktop)."""
+    from analytics.dataset_report import generate_dashboard, resolve_csv_path
+
+    name = _extract_csv_name(user_input)
+    path = resolve_csv_path(name)
+    _, summary = generate_dashboard(path)
+    return summary, ["analytics__build_dashboard"], 1
+
+
 def _looks_like_fake_tool_json(content: str) -> bool:
     c = (content or "").strip()
     if c.startswith("{") and ("\"request\"" in c or "\"operation\"" in c):
@@ -493,9 +612,14 @@ def _powerbi_tool_choice(tools_for_step: list[dict], tools_used: list[str]) -> s
 
 
 def _tools_for_message(user_input: str, all_tools: list[dict]) -> list[dict]:
+    if _should_run_analytics_dashboard(user_input) or (
+        _is_analytics_query(user_input) and not _is_powerbi_query(user_input)
+    ):
+        ana = _only_analytics_tools(all_tools)
+        if ana:
+            return ana
     pbi = _only_powerbi_tools(all_tools)
     if pbi and _is_powerbi_query(user_input):
-        # No mezclar thinking: el modelo pequeño se queda en bucle sin llamar Power BI bien.
         return pbi
     if user_input.strip().lower().startswith(("explica", "explícame", "explicame")):
         if not _is_powerbi_query(user_input):
@@ -531,6 +655,11 @@ Secuencia tipica:
 2) powerbi__connection_operations con request.connectionString tomado de la instancia (NO basta initialCatalog solo).
 3) powerbi__table_operations con request.operation = "List".
 4) powerbi__column_operations con request.operation = "List" y request.tableName (NO existe ListColumns).
+5) powerbi__dax_query_operations Execute para KPIs; powerbi__model_operations GetStats para resumen.
+
+El MCP de Power BI NO crea graficos ni paginas de informe (solo modelo y DAX).
+Para cuadro de mando visual sin usar Desktop: pide analisis/dashboard de california_housing.csv
+(usar servidor analytics).
 
 Ejemplo listar columnas:
 {"request": {"operation": "List", "tableName": "california_housing"}}
@@ -562,8 +691,32 @@ CUANDO USAR thinking__think:
         catalog = _extract_powerbi_catalog(user_input) or "mi-modelo"
         table_name = _extract_table_name(user_input)
 
+        if _should_run_analytics_dashboard(user_input):
+            try:
+                final_answer, direct_tools, steps_done = _analytics_dashboard_direct(user_input)
+                tools_used.extend(direct_tools)
+                save_memory([
+                    {"role": "user", "content": user_input},
+                    {"role": "assistant", "content": final_answer},
+                ])
+                return
+            except Exception as exc:
+                final_answer = f"Error generando cuadro de mando: {exc}"
+                return
+
         if powerbi_enabled() and "powerbi__connection_operations" in tool_map:
             try:
+                if _should_run_powerbi_dax_analysis(user_input):
+                    tbl = table_name or "california_housing"
+                    final_answer, direct_tools, steps_done = (
+                        await _powerbi_dax_analysis_direct(tool_map, catalog, tbl)
+                    )
+                    tools_used.extend(direct_tools)
+                    save_memory([
+                        {"role": "user", "content": user_input},
+                        {"role": "assistant", "content": final_answer},
+                    ])
+                    return
                 if table_name and _should_run_powerbi_list_columns(user_input):
                     final_answer, direct_tools, steps_done = (
                         await _powerbi_list_columns_direct(tool_map, catalog, table_name)
@@ -772,6 +925,17 @@ def get_mcp_prompt_catalog() -> list[dict]:
             ],
         },
         {
+            "id": "analytics",
+            "label": "Análisis de datos",
+            "description": "Cuadro de mando HTML desde CSV (sin abrir Power BI)",
+            "color": "#10b981",
+            "prompts": [
+                "Analiza california_housing.csv y resume las métricas clave",
+                "Genera un cuadro de mando con gráficos de california_housing.csv",
+                "Prepara un dashboard con KPIs: precio, ingreso y zonas oceánicas",
+            ],
+        },
+        {
             "id": "powerbi",
             "label": "Power BI",
             "description": "Modelo semántico en Desktop (tablas, columnas, DAX)",
@@ -780,7 +944,7 @@ def get_mcp_prompt_catalog() -> list[dict]:
             "prompts": [
                 "Lista las tablas del modelo abierto en Power BI",
                 "Lista las columnas de la tabla california_housing",
-                "Conéctate a mi-modelo y lista todas las tablas",
+                "Analiza el modelo california_housing en Power BI con DAX (KPIs)",
             ],
         },
     ]

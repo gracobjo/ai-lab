@@ -1,6 +1,8 @@
 # Power BI Modeling MCP en ai-lab
 
-Integración del [servidor MCP oficial de Microsoft](https://github.com/microsoft/powerbi-modeling-mcp) para trabajar con **modelos semánticos** de Power BI (tablas, medidas, relaciones, DAX). No modifica el diseño visual de informes.
+Integración del [servidor MCP oficial de Microsoft](https://github.com/microsoft/powerbi-modeling-mcp) para trabajar con **modelos semánticos** de Power BI (tablas, medidas, relaciones, DAX). **No crea gráficos ni páginas de informe.**
+
+Para cuadros de mando visuales **sin abrir Power BI**, usa el servidor **analytics** y `california_housing.csv`: [analytics-dashboard.md](analytics-dashboard.md).
 
 ## Requisitos
 
@@ -95,6 +97,9 @@ Para modelos pequeños (`qwen2.5-3b-instruct`) que no hacen function calling, ai
 |---------------------|--------|
 | *Lista las tablas* / *lista todas las tablas* / *Conéctate a mi-modelo y lista…* | ListLocalInstances → Connect → `table_operations` List |
 | *Lista las columnas de la tabla california_housing* | ListLocalInstances → Connect → `column_operations` List |
+| *Analiza el modelo … con DAX* / *KPIs* | Connect → GetStats → `dax_query_operations` Execute |
+
+Para **gráficos y dashboard HTML** sin diseñar informes en Desktop → [analytics-dashboard.md](analytics-dashboard.md).
 
 Condiciones:
 

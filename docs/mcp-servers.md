@@ -11,6 +11,7 @@ ai-lab conecta varios servidores MCP (Model Context Protocol) al agente. Cada un
 | [Git](#git) | `git` | Python `mcps/git_server.py` | status, log, diff, blame… |
 | [Web](#fetch) | `fetch` | Python `mcps/fetch_server.py` | HTTP GET, JSON, headers |
 | [Razonamiento](#thinking) | `thinking` | Python `mcps/thinking_server.py` | Cadena de pensamiento interna |
+| [Análisis de datos](#analytics) | `analytics` | Python `mcps/analytics_server.py` | CSV → KPIs y dashboard HTML |
 | [Power BI](#power-bi-opcional) | `powerbi` | `npx` (opcional) | Modelo semántico Desktop |
 
 Power BI **no** se carga por defecto. Ver [powerbi-mcp.md](powerbi-mcp.md).
@@ -67,6 +68,16 @@ Las frases se sirven desde `GET /prompts` y se definen en `get_mcp_prompt_catalo
 | Explícame el flujo desde la pregunta del usuario hasta la respuesta del agente |
 | Piensa paso a paso cómo añadir una nueva tool MCP al proyecto |
 
+#### analytics — Análisis de datos
+
+| Frase | Flujo directo |
+|-------|---------------|
+| Analiza california_housing.csv y resume las métricas clave | Dashboard HTML |
+| Genera un cuadro de mando con gráficos de california_housing.csv | Dashboard HTML |
+| Prepara un dashboard con KPIs: precio, ingreso y zonas oceánicas | Dashboard HTML |
+
+Guía completa: [analytics-dashboard.md](analytics-dashboard.md).
+
 #### powerbi — Power BI (requiere `run_web_powerbi.ps1`)
 
 | Frase | Flujo directo en backend |
@@ -74,6 +85,7 @@ Las frases se sirven desde `GET /prompts` y se definen en `get_mcp_prompt_catalo
 | Lista las tablas del modelo abierto en Power BI | Sí — tablas |
 | Lista las columnas de la tabla california_housing | Sí — columnas |
 | Conéctate a mi-modelo y lista todas las tablas | Sí — tablas |
+| Analiza el modelo california_housing en Power BI con DAX (KPIs) | Sí — DAX + GetStats |
 
 Si Power BI no está activo, la tarjeta aparece deshabilitada con instrucciones de activación.
 
@@ -156,6 +168,20 @@ Permite al agente listar, leer y escribir archivos dentro del workspace (sandbox
 | `think_reset` | Reinicia la cadena |
 
 **Cuándo usarlo:** planificación multi-paso antes de otras tools. En preguntas Power BI el agente **no** debería usar thinking (se filtran solo tools `powerbi__`).
+
+---
+
+## analytics
+
+**Script:** `mcps/analytics_server.py`  
+**Prefijo:** `analytics__`
+
+| Tool | Descripción |
+|------|-------------|
+| `analyze_dataset` | Estadísticas y correlaciones de un CSV |
+| `build_dashboard` | Cuadro de mando HTML con gráficos |
+
+**Cuándo usarlo:** análisis del dataset `california_housing.csv` (u otro CSV en el proyecto) **sin** Power BI Desktop. Ver [analytics-dashboard.md](analytics-dashboard.md).
 
 ---
 

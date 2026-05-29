@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from agent_core import (
@@ -989,6 +989,19 @@ app.add_middleware(
 @app.get("/", response_class=HTMLResponse)
 async def web_ui():
     return WEB_UI
+
+
+REPORTS_DIR = BASE_PATH / "data" / "reports"
+
+
+@app.get("/reports/{filename}")
+async def get_report(filename: str):
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=404, detail="Informe no encontrado.")
+    path = REPORTS_DIR / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Informe no encontrado.")
+    return FileResponse(path, media_type="text/html; charset=utf-8")
 
 
 @app.get("/health")
