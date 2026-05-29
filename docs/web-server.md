@@ -78,6 +78,7 @@ En LM Studio, el contexto del modelo debe ser suficiente (≥ 8192 tokens si usa
 | `DELETE /memory` | Borrar historial |
 | `GET /tools` | Lista de herramientas MCP |
 | `GET /prompts` | Frases de ejemplo agrupadas por servidor MCP |
+| `GET /reports/{filename}` | Informes HTML generados (dashboards, diagramas de flujo) |
 | `POST /chat` | Enviar mensaje al agente (API REST) |
 | `GET /docs` | Documentación OpenAPI (Swagger) |
 
@@ -90,6 +91,8 @@ Al abrir el chat sin historial verás **tarjetas por servidor MCP** con frases l
 Las frases provienen de `GET /prompts` (catálogo en `agent_core.get_mcp_prompt_catalog()`). Detalle por servidor: [mcp-servers.md](mcp-servers.md).
 
 Power BI: las frases de tablas/columnas usan **flujos directos** en el backend cuando el LLM no invoca tools bien (modelos pequeños). Ver [powerbi-mcp.md](powerbi-mcp.md).
+
+**Diagramas de flujo:** frases sobre `tramites.csv` generan HTML interactivo en `/reports/`. Ver [flow-diagrams.md](flow-diagrams.md).
 
 ---
 

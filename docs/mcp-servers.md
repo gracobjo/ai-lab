@@ -72,7 +72,7 @@ Las frases se sirven desde `GET /prompts` y se definen en `get_mcp_prompt_catalo
 
 | Frase | Flujo directo |
 |-------|---------------|
-| Genera el diagrama de flujo de tramites.csv desde REGISTRO DE SOLICITUD | Diagrama HTML |
+| Genera el diagrama de flujo de tramites.csv desde REGISTRO DE SOLICITUD | Diagrama HTML interactivo |
 | Analiza la estructura del proceso en tramites.csv | Análisis grafo |
 | Genera un cuadro de mando con gráficos de california_housing.csv | Dashboard HTML |
 
@@ -181,7 +181,7 @@ Permite al agente listar, leer y escribir archivos dentro del workspace (sandbox
 | `analyze_dataset` | Estadísticas y correlaciones de un CSV |
 | `build_dashboard` | Cuadro de mando HTML con gráficos |
 | `analyze_flow` | Análisis de grafo de trámites (CSV tipo Visio) |
-| `build_flow_diagram` | Diagrama de flujo HTML + Mermaid |
+| `build_flow_diagram` | Diagrama de flujo HTML interactivo (vis-network) + export Mermaid |
 
 **Cuándo usarlo:** análisis del dataset `california_housing.csv` (u otro CSV en el proyecto) **sin** Power BI Desktop. Ver [analytics-dashboard.md](analytics-dashboard.md).
 

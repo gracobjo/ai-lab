@@ -15,6 +15,7 @@ data/memory.json
 data/thoughts.jsonl
 data/runtime_flags.json
 data/reports/*.html
+data/reports/*.mmd
 
 # Entorno
 .env
